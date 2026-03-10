@@ -1374,15 +1374,7 @@ def main():
     sheets     = find_ecrf_sheets(io.BytesIO(file_bytes))
     ecrf_sheet = st.selectbox("eCRF data sheet", options=sheets, index=0)
 
-    col_cf, col_cv = st.columns([2, 1])
-    with col_cf:
-        center_input = st.text_input(
-            "Study center abbreviation",
-            value="VCS",
-            help="Filters subjects to this center only (STUDY CENTER ABBREV column).",
-        ).strip().upper()
-    with col_cv:
-        show_center = st.checkbox(
+    show_center = st.checkbox(
             "Show center on charts", value=True,
             help="When unchecked, the center chip is removed from the chart subtitle row.")
 
@@ -1430,7 +1422,7 @@ def main():
     ecrf: ECRFData               = st.session_state.ecrf
     all_param_stats: OrderedDict = st.session_state.all_param_stats
     auto_dirs: dict              = st.session_state.auto_dirs
-
+    
     # ══════════════════════════════════════════════
     # STEP 2 — Subject Summary
     # ══════════════════════════════════════════════
