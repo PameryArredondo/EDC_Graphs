@@ -18,13 +18,14 @@ import streamlit as st
 from matplotlib.backends.backend_pdf import PdfPages
 from matplotlib.patches import FancyBboxPatch, Rectangle
 from difflib import SequenceMatcher
+from streamlit_sortables import sort_items
 from scipy import stats
 
 # ═══════════════════════════════════════════════════════════════
 # 1. CONFIGURATION & STYLE
 # ═══════════════════════════════════════════════════════════════
 
-CENTER_FILTER = "VCS"   # module-level; overwritten by UI at parse time
+CENTER_FILTER = "VCS"   
 
 METADATA_COLS = {
     "STUDY REFERENCE", "SUBJECT ID", "STATUS", "STUDY CENTER ABBREV",
@@ -1496,6 +1497,15 @@ def main():
 
     st.caption("Active timepoints: "
                + " → ".join(TP_DISPLAY.get(t, t) for t in active_tps))
+
+    with st.expander("🔀 Reorder timepoints (drag to fix order)", expanded=False):
+        display_labels = [f"{TP_DISPLAY.get(t, t)} ({t})" for t in active_tps]
+        sorted_labels  = sort_items(display_labels, direction="vertical")
+        sorted_tps     = [active_tps[display_labels.index(l)] for l in sorted_labels]
+        if sorted_tps != active_tps:
+            active_tps = sorted_tps
+            st.caption("Custom order applied: "
+                       + " → ".join(TP_DISPLAY.get(t, t) for t in active_tps))
 
     # ══════════════════════════════════════════════
     # STEP 4 — Orphaned Parameters (conditional)
