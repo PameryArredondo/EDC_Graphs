@@ -17,6 +17,7 @@ import pandas as pd
 import streamlit as st
 from matplotlib.backends.backend_pdf import PdfPages
 from matplotlib.patches import FancyBboxPatch, Rectangle
+from difflib import SequenceMatcher
 from scipy import stats
 
 # ═══════════════════════════════════════════════════════════════
@@ -388,6 +389,11 @@ def classify_column_data(series, max_samples=50):
     if pcts['text']    >= thresh: return 'text'
     return 'mixed'
 
+def strip_trailing_digits(name: str) -> str:
+    i = len(name) - 1
+    while i >= 0 and name[i].isdigit():
+        i -= 1
+    return name[: i + 1] if i >= 0 else name
 
 def is_likely_data_parameter(series, param_code=""):
     return classify_column_data(series) in ('numeric', 'mixed')
@@ -640,27 +646,196 @@ def sort_timepoints_by_appearance(timepoint_order: list,
         return (1, tp_sort_key(tp)[0] * 1000 + tp_sort_key(tp)[1])
     return sorted(timepoint_order, key=sort_key)
 
+def find_orphan_conflicts(
+    ecrf: "ECRFData",
+    assignments: dict,          # {orphan_base: tp_key}
+    df_included: "pd.DataFrame",
+    similarity_threshold: float = 0.75,
+) -> list:
+    """
+    For each orphan assignment, check whether:
+      (a) the stripped base name matches an existing parameter, AND
+      (b) the assigned timepoint is already occupied by that parameter, AND
+      (c) the two columns' Row-2 descriptions are similar enough.
+
+    Returns a list of dicts, one per conflict:
+      {
+        'orphan_base':    str,   # original orphan key e.g. "FIRM2"
+        'stripped_base':  str,   # e.g. "FIRM"
+        'existing_base':  str,   # matched existing parameter key
+        'tp':             str,   # timepoint key e.g. "W4"
+        'orphan_col':     str,   # column name in df
+        'existing_col':   str,   # column name in df
+        'orphan_display': str,
+        'existing_display': str,
+        'orphan_mean':    float | None,
+        'existing_mean':  float | None,
+        'orphan_n':       int,
+        'existing_n':     int,
+        'sample_df':      pd.DataFrame,  # 5-row side-by-side sample
+        'similarity':     float,
+      }
+    """
+    from difflib import SequenceMatcher
+
+    conflicts = []
+
+    for orphan_base, tp in assignments.items():
+        if tp == "" or orphan_base not in ecrf.orphaned_params:
+            continue
+
+        orphan_col = ecrf.orphan_col_map.get(orphan_base)
+        if orphan_col is None or orphan_col not in df_included.columns:
+            continue
+
+        stripped = strip_trailing_digits(orphan_base)
+
+        # Find a matching existing parameter by stripped name or description
+        matched_existing = None
+        best_sim = 0.0
+
+        orphan_display = ecrf.orphaned_params[orphan_base].display_name or orphan_base
+
+        for existing_base, existing_param in ecrf.parameters.items():
+            # Must occupy the same timepoint
+            if tp not in existing_param.tp_columns:
+                continue
+
+            # Check name similarity (stripped base vs existing base)
+            name_sim = SequenceMatcher(
+                None,
+                stripped.upper(),
+                existing_base.upper(),
+            ).ratio()
+
+            # Check description similarity
+            existing_display = existing_param.display_name or existing_base
+            desc_sim = SequenceMatcher(
+                None,
+                orphan_display.upper(),
+                existing_display.upper(),
+            ).ratio()
+
+            sim = max(name_sim, desc_sim)
+
+            if sim >= similarity_threshold and sim > best_sim:
+                best_sim = sim
+                matched_existing = existing_base
+
+        if matched_existing is None:
+            continue
+
+        existing_param = ecrf.parameters[matched_existing]
+        existing_col   = existing_param.tp_columns[tp]
+
+        if existing_col not in df_included.columns:
+            continue
+
+        # Compute per-column stats
+        orphan_vals   = pd.to_numeric(df_included[orphan_col],   errors="coerce").dropna()
+        existing_vals = pd.to_numeric(df_included[existing_col], errors="coerce").dropna()
+
+        # Build 5-row side-by-side sample aligned on subject ID
+        sample = (
+            df_included[["_SID", existing_col, orphan_col]]
+            .rename(columns={
+                existing_col: f"{matched_existing} (existing)",
+                orphan_col:   f"{orphan_base} (orphan)",
+            })
+            .head(5)
+            .reset_index(drop=True)
+        )
+        sample.columns = ["Subject ID",
+                          f"{matched_existing} (existing)",
+                          f"{orphan_base} (orphan)"]
+
+        conflicts.append({
+            "orphan_base":      orphan_base,
+            "stripped_base":    stripped,
+            "existing_base":    matched_existing,
+            "tp":               tp,
+            "orphan_col":       orphan_col,
+            "existing_col":     existing_col,
+            "orphan_display":   orphan_display,
+            "existing_display": existing_param.display_name or matched_existing,
+            "orphan_mean":      float(orphan_vals.mean())   if len(orphan_vals)   > 0 else None,
+            "existing_mean":    float(existing_vals.mean()) if len(existing_vals) > 0 else None,
+            "orphan_n":         len(orphan_vals),
+            "existing_n":       len(existing_vals),
+            "sample_df":        sample,
+            "similarity":       round(best_sim, 2),
+        })
+
+    return conflicts
 
 # ═══════════════════════════════════════════════════════════════
 # 10. ORPHAN ASSIGNMENT
 # ═══════════════════════════════════════════════════════════════
 
-def apply_orphan_assignments(ecrf: ECRFData, assignments: dict) -> ECRFData:
-    for base, tp in assignments.items():
-        if tp == "" or base not in ecrf.orphaned_params:
+def apply_orphan_assignments(
+    ecrf: "ECRFData",
+    assignments: dict,
+    merge_decisions: dict = None,
+) -> "ECRFData":
+    """
+    Applies orphan timepoint assignments to ecrf.parameters.
+
+    merge_decisions keys:
+      orphan_base          -> True (merge) or False (keep separate)
+      __target_orphan_base -> the exact existing parameter key to merge into,
+                             stashed by the UI from find_orphan_conflicts results
+    """
+    if merge_decisions is None:
+        merge_decisions = {}
+
+    for orphan_base, tp in assignments.items():
+        if tp == "" or orphan_base not in ecrf.orphaned_params:
             continue
-        orphan_col = ecrf.orphan_col_map.get(base)
+
+        orphan_col = ecrf.orphan_col_map.get(orphan_base)
         if orphan_col is None:
             continue
+
+        # Add timepoint to order if not already present
         if tp not in ecrf.timepoint_order:
             ecrf.timepoint_order = sorted(
-                ecrf.timepoint_order + [tp], key=tp_sort_key)
-        if base not in ecrf.parameters:
-            ecrf.parameters[base] = ecrf.orphaned_params[base]
-        ecrf.parameters[base].tp_columns[tp] = orphan_col
-        ecrf.col_map[(tp, base)]             = orphan_col
-    return ecrf
+                ecrf.timepoint_order + [tp], key=tp_sort_key
+            )
 
+        stripped     = strip_trailing_digits(orphan_base)
+        should_merge = merge_decisions.get(orphan_base, False)
+
+        target_base = None
+        if should_merge:
+            # First choice: use the exact key stashed by the UI during conflict review.
+            # This survives group_duplicate_parameters renaming the canonical key.
+            stashed = merge_decisions.get(f"__target_{orphan_base}")
+            if stashed and stashed in ecrf.parameters and tp in ecrf.parameters[stashed].tp_columns:
+                target_base = stashed
+            else:
+                # Fallback: scan for a parameter that owns this tp and whose key
+                # matches either the stripped base or the original orphan base.
+                for existing_base, existing_param in ecrf.parameters.items():
+                    if tp in existing_param.tp_columns and (
+                        existing_base.upper() == stripped.upper()
+                        or existing_base.upper() == orphan_base.upper()
+                    ):
+                        target_base = existing_base
+                        break
+
+        if target_base and should_merge:
+            # Merge: point the existing parameter's tp slot at the orphan column.
+            # Explicit user decision so overwrite is intentional.
+            ecrf.parameters[target_base].tp_columns[tp] = orphan_col
+            ecrf.col_map[(tp, target_base)] = orphan_col
+        else:
+            # Keep separate: register as its own parameter entry.
+            if orphan_base not in ecrf.parameters:
+                ecrf.parameters[orphan_base] = ecrf.orphaned_params[orphan_base]
+            ecrf.parameters[orphan_base].tp_columns[tp] = orphan_col
+            ecrf.col_map[(tp, orphan_base)] = orphan_col
+
+    return ecrf
 
 # ═══════════════════════════════════════════════════════════════
 # 11. STATISTICS
@@ -1173,11 +1348,6 @@ def generate_pdf_bytes(ecrf, all_param_stats, improvement_dirs, chart_titles,
     buf.seek(0)
     return buf.read()
 
-
-# ═══════════════════════════════════════════════════════════════
-# 17. STREAMLIT APP
-# ═══════════════════════════════════════════════════════════════
-
 def main():
     st.set_page_config(page_title="eCRF Chart Generator",
                        page_icon="📊", layout="wide")
@@ -1343,6 +1513,7 @@ def main():
     # STEP 4 — Orphaned Parameters (conditional)
     # ══════════════════════════════════════════════
     orphan_assignments: dict = {}
+    merge_decisions: dict    = {}
     step_offset = 0
 
     if ecrf.orphaned_params:
@@ -1352,6 +1523,7 @@ def main():
             "These columns have no timepoint prefix. Assign each to a timepoint "
             "to include it in the analysis, or leave as (skip)."
         )
+
         tp_options_for_orphans = ["(skip)"] + active_tps
         cols = st.columns(3)
         for i, (base, pi) in enumerate(ecrf.orphaned_params.items()):
@@ -1368,16 +1540,100 @@ def main():
                 if choice != "(skip)":
                     orphan_assignments[base] = choice
 
+        # ── Conflict detection & resolution ──────────────────────
         if orphan_assignments:
-            st.success(f"✅ {len(orphan_assignments)} orphaned parameter(s) will be merged.")
-            ecrf = apply_orphan_assignments(ecrf, orphan_assignments)
+            conflicts = find_orphan_conflicts(ecrf, orphan_assignments, ecrf.df)
+
+            if conflicts:
+                st.warning(
+                    f"⚠️ **{len(conflicts)} potential merge conflict(s) detected.** "
+                    "Review below before continuing."
+                )
+                with st.expander("Review conflicts and choose merge behaviour",
+                                 expanded=True):
+                    for c in conflicts:
+                        st.markdown(
+                            f"**{c['orphan_base']}** (orphan) vs "
+                            f"**{c['existing_base']}** (existing) "
+                            f"at timepoint **{TP_DISPLAY.get(c['tp'], c['tp'])}** "
+                            f"— similarity {c['similarity']:.0%}"
+                        )
+                        mc1, mc2 = st.columns(2)
+                        with mc1:
+                            st.markdown(f"*Existing — {c['existing_display']}*")
+                            st.markdown(
+                                f"n = **{c['existing_n']}** · "
+                                f"mean = **{c['existing_mean']:.2f}**"
+                                if c["existing_mean"] is not None
+                                else f"n = **{c['existing_n']}** · mean = —"
+                            )
+                        with mc2:
+                            st.markdown(f"*Orphan — {c['orphan_display']}*")
+                            st.markdown(
+                                f"n = **{c['orphan_n']}** · "
+                                f"mean = **{c['orphan_mean']:.2f}**"
+                                if c["orphan_mean"] is not None
+                                else f"n = **{c['orphan_n']}** · mean = —"
+                            )
+                        st.dataframe(
+                            c["sample_df"], hide_index=True,
+                            use_container_width=False
+                        )
+                        decision = st.radio(
+                            f"Decision for **{c['orphan_base']}**:",
+                            options=["Keep separate", "Merge into existing"],
+                            index=0,
+                            horizontal=True,
+                            key=f"merge_decision_{c['orphan_base']}",
+                        )
+                        merge_decisions[c["orphan_base"]] = (
+                            decision == "Merge into existing"
+                        )
+                        merge_decisions[f"__target_{c['orphan_base']}"] = c["existing_base"]
+                        st.divider()
+
+                # Gate downstream steps until all conflicts are resolved
+                unresolved = [
+                    c for c in conflicts
+                    if c["orphan_base"] not in merge_decisions
+                ]
+                if unresolved:
+                    st.info("Resolve all conflicts above to continue.")
+                    st.stop()
+
+            # Apply assignments with user merge decisions
+            ecrf = apply_orphan_assignments(ecrf, orphan_assignments, merge_decisions)
+
+            # Re-run deduplication so merged orphans fold into existing params,
+            # mirroring the VBA post-assignment GroupDuplicateParameters call
+            ecrf.parameters = group_duplicate_parameters(
+                ecrf.parameters, ecrf.df, {}
+            )
+
+            # Recompute stats for every affected parameter
             for base in orphan_assignments:
-                if base in ecrf.parameters:
-                    all_param_stats[base] = compute_parameter_stats(
-                        ecrf, ecrf.parameters[base])
-                    if base not in auto_dirs:
-                        auto_dirs[base] = auto_detect_improvement_direction(
-                            ecrf, ecrf.parameters[base])
+                # If merged, the target key is the existing param, not the orphan
+                target = base
+                if merge_decisions.get(base):
+                    for existing_base in ecrf.parameters:
+                        if existing_base != base and strip_trailing_digits(base).upper() \
+                                == existing_base.upper():
+                            target = existing_base
+                            break
+                if target in ecrf.parameters:
+                    all_param_stats[target] = compute_parameter_stats(
+                        ecrf, ecrf.parameters[target])
+                    if target not in auto_dirs:
+                        auto_dirs[target] = auto_detect_improvement_direction(
+                            ecrf, ecrf.parameters[target])
+
+            merged_count   = sum(1 for v in merge_decisions.values() if v)
+            separate_count = len(orphan_assignments) - merged_count
+            if merged_count:
+                st.success(f"✅ {merged_count} orphan(s) merged into existing parameters.")
+            if separate_count:
+                st.success(f"✅ {separate_count} orphan(s) added as new parameters.")
+
         step_offset = 1
 
     # ══════════════════════════════════════════════
@@ -1397,7 +1653,7 @@ def main():
     analysis_mode = st.selectbox(
         "Analysis type filter", options=ANALYSIS_MODES, index=default_mode_idx)
 
-    is_expert = "Expert" in analysis_mode   # scoped here, used in Step 9
+    is_expert = "Expert" in analysis_mode
 
     filtered_names = filter_parameters_by_mode(all_param_names, analysis_mode)
     if analysis_mode != "All Parameters":
@@ -1407,10 +1663,10 @@ def main():
 
     param_rows = []
     for base in filtered_names:
-        p        = ecrf.parameters[base]
-        s        = all_param_stats.get(base, {})
-        bl_mean  = s.get(ecrf.baseline_prefix, {}).get('mean')
-        last_tps = [tp for tp in active_tps if tp in s and tp != ecrf.baseline_prefix]
+        p         = ecrf.parameters[base]
+        s         = all_param_stats.get(base, {})
+        bl_mean   = s.get(ecrf.baseline_prefix, {}).get('mean')
+        last_tps  = [tp for tp in active_tps if tp in s and tp != ecrf.baseline_prefix]
         last_mean = s[last_tps[-1]]['mean'] if last_tps else None
         param_rows.append({
             "Base Name":    base + (" ★" if base in orphan_assignments else ""),
@@ -1512,7 +1768,7 @@ def main():
     else:
         st.warning("No parameters selected.")
 
-# ══════════════════════════════════════════════
+    # ══════════════════════════════════════════════
     # STEP 8/9 — Data Quality
     # ══════════════════════════════════════════════
     st.divider()
