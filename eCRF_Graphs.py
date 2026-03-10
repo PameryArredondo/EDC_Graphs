@@ -1348,7 +1348,7 @@ def main():
     st.set_page_config(page_title="eCRF Chart Generator",
                        page_icon="📊", layout="wide")
     st.title("📊 eCRF Chart Generator v1.5")
-    st.caption("Generates mean-change-from-baseline charts for clinical eCRF data.")
+    st.caption("Generates mean-change-from-baseline charts for eCRF data.")
 
     for key in ("ecrf", "all_param_stats", "auto_dirs", "uploaded_file_name"):
         if key not in st.session_state:
