@@ -970,37 +970,6 @@ def summarise_data_quality(issues: dict) -> dict:
     return {'total_issues': total, 'affected_subjects': len(affected),
             'per_subject': per_subject}
 
-
-# ── Step 8 UI block (replaces the existing Step 8 section in main()) ──────────
-
-    st.divider()
-    st.header(f"Step {8 + step_offset} — Data Quality")
-
-    if keep and active_tps:
-        dq_issues   = scan_data_quality(ecrf, keep, active_tps)
-        dq_summary  = summarise_data_quality(dq_issues)
-        total       = dq_summary['total_issues']
-        n_affected  = dq_summary['affected_subjects']
-        per_subject = dq_summary['per_subject']
-
-        if total == 0:
-            st.success("✅ No data quality issues detected.")
-        else:
-            st.warning(
-                f"⚠️ **{total} missing value(s)** across **{n_affected} subject(s)**. "
-                "Charts will use available data only."
-            )
-            with st.expander(
-                f"🟡 Per-subject missing data ({n_affected} subject(s))",
-                expanded=True):
-                ps_rows = [{"Subject ID": sid, "Missing": entry}
-                           for sid in sorted(per_subject)
-                           for entry in per_subject[sid]]
-                st.dataframe(pd.DataFrame(ps_rows),
-                             hide_index=True, use_container_width=True)
-    else:
-        st.info("Select parameters and timepoints above to run the data quality scan.")
-        
 # ═══════════════════════════════════════════════════════════════
 # 15. CHART GENERATION
 # ═══════════════════════════════════════════════════════════════
@@ -1543,47 +1512,34 @@ def main():
     else:
         st.warning("No parameters selected.")
 
-    # ══════════════════════════════════════════════
+# ══════════════════════════════════════════════
     # STEP 8/9 — Data Quality
     # ══════════════════════════════════════════════
     st.divider()
     st.header(f"Step {8 + step_offset} — Data Quality")
 
     if keep and active_tps:
-        dq_issues    = scan_data_quality(ecrf, keep, active_tps)
-        dq_summary   = summarise_data_quality(dq_issues)
-        total_issues = dq_summary['total_issues']
-        n_affected   = dq_summary['affected_subjects']
-        structural   = dq_summary['structural_missing']
-        per_subject  = dq_summary['per_subject']
+        dq_issues   = scan_data_quality(ecrf, keep, active_tps)
+        dq_summary  = summarise_data_quality(dq_issues)
+        total       = dq_summary['total_issues']
+        n_affected  = dq_summary['affected_subjects']
+        per_subject = dq_summary['per_subject']
 
-        if total_issues == 0:
+        if total == 0:
             st.success("✅ No data quality issues detected.")
         else:
             st.warning(
-                f"⚠️ **{total_issues} missing value(s)** across "
-                f"**{n_affected} subject(s)**"
-                + (f" · {len(structural)} structural gap(s)" if structural else "")
-                + ". Charts will use available data only."
+                f"⚠️ **{total} missing value(s)** across **{n_affected} subject(s)**. "
+                "Charts will use available data only."
             )
-            if structural:
-                with st.expander(
-                    f"🔴 Structural gaps ({len(structural)}) — column missing entirely",
-                    expanded=True):
-                    st.dataframe(
-                        pd.DataFrame([{"Timepoint": TP_DISPLAY.get(tp, tp),
-                                       "Parameter": disp}
-                                      for tp, disp in sorted(structural)]),
-                        hide_index=True, use_container_width=True)
-            if per_subject:
-                with st.expander(
-                    f"🟡 Per-subject missing data ({n_affected} subject(s))",
-                    expanded=False):
-                    ps_rows = [{"Subject ID": sid, "Missing": entry}
-                               for sid in sorted(per_subject)
-                               for entry in per_subject[sid]]
-                    st.dataframe(pd.DataFrame(ps_rows),
-                                 hide_index=True, use_container_width=True)
+            with st.expander(
+                f"🟡 Per-subject missing data ({n_affected} subject(s))",
+                expanded=True):
+                ps_rows = [{"Subject ID": sid, "Missing": entry}
+                           for sid in sorted(per_subject)
+                           for entry in per_subject[sid]]
+                st.dataframe(pd.DataFrame(ps_rows),
+                             hide_index=True, use_container_width=True)
     else:
         st.info("Select parameters and timepoints above to run the data quality scan.")
 
