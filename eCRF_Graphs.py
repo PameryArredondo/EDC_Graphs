@@ -1382,7 +1382,7 @@ def main():
     ov_basenames: set = set()
     if ov_sheet:
         st.success(f"Option Values sheet detected: **{ov_sheet}** — "
-                   "procedural variables excluded automatically.")
+                   "Excluded subjects in the status column excluded automatically.")
         ov_basenames = load_ov_variable_basenames(io.BytesIO(file_bytes), ov_sheet)
     else:
         st.warning("No Option Values sheet found. Relying on built-in exclusion list.")
