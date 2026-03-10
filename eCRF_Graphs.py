@@ -113,19 +113,31 @@ INSTRUMENT_KEYWORDS = [
 MISSING_MARKERS = {"", ".", ".UNK", ".HIDDEN", "ND", "N/A", "#N/A", ".ND"}
 
 KNOWN_TP_ORDER = [
-    "SC", "BL", "PRE", "POST", "IM",
+    "SC", "BL", "PRE",
+    "15MIN", "30MIN", "45MIN",
+    "1H", "2H", "4H", "6H", "8H", "12H",
+    "IMM", "IM", "POST",
     "W1", "W2", "W4", "W6", "W8", "W10", "W12",
     "W16", "W20", "W24", "W26", "W36", "W48", "W52",
+    "M1", "M2", "M3", "M6", "M9", "M12",
+    "D1", "D2", "D3", "D7", "D14", "D28",
 ]
 
 TP_DISPLAY = {
     "SC": "Screening", "BL": "Baseline", "PRE": "Pre-Application",
-    "POST": "Post-Application", "IM": "Immediate",
+    "15MIN": "15 Minutes", "30MIN": "30 Minutes", "45MIN": "45 Minutes",
+    "1H": "1 Hour", "2H": "2 Hours", "4H": "4 Hours",
+    "6H": "6 Hours", "8H": "8 Hours", "12H": "12 Hours",
+    "IMM": "Immediate", "IM": "Immediate", "POST": "Post-Application",
     "W1": "Week 1", "W2": "Week 2", "W4": "Week 4",
     "W6": "Week 6", "W8": "Week 8", "W10": "Week 10",
     "W12": "Week 12", "W16": "Week 16", "W20": "Week 20",
     "W24": "Week 24", "W26": "Week 26", "W36": "Week 36",
     "W48": "Week 48", "W52": "Week 52",
+    "M1": "Month 1", "M2": "Month 2", "M3": "Month 3",
+    "M6": "Month 6", "M9": "Month 9", "M12": "Month 12",
+    "D1": "Day 1", "D2": "Day 2", "D3": "Day 3",
+    "D7": "Day 7", "D14": "Day 14", "D28": "Day 28",
 }
 
 COLORS = {
