@@ -515,10 +515,6 @@ def parse_ecrf_data(excel_file, ecrf_sheet, ov_exclusion_basenames,
     df_data['_STATUS']       = df_data[c_stat].astype(str).str.strip()
     df_data['_STATUS_UPPER'] = df_data['_STATUS'].str.upper()
 
-    if c_cent and CENTER_FILTER:
-        df_data['_CENTER'] = df_data[c_cent].astype(str).str.upper().str.strip()
-        df_data = df_data[df_data['_CENTER'] == CENTER_FILTER].copy()
-
     if global_exclusions:
         df_data = df_data[~df_data['_SID'].isin(set(global_exclusions))].copy()
 
@@ -1414,7 +1410,7 @@ def main():
         with st.spinner("Parsing eCRF data…"):
             ecrf, err = parse_ecrf_data(
                 io.BytesIO(file_bytes), ecrf_sheet, ov_basenames,
-                global_exclusions, center_filter=center_input)
+                global_exclusions)
         if err:
             st.error(f"Parse error: {err}")
             st.stop()
