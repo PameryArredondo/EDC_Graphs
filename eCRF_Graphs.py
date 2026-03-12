@@ -1270,6 +1270,7 @@ def create_parameter_chart(ecrf, param, param_stats, improvement_dir,
 
     ax.yaxis.set_major_locator(plt.MultipleLocator(tick_interval))
     ax.yaxis.set_minor_locator(plt.MultipleLocator(tick_interval / 2))
+    ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"{x:,.0f}"))
     ax.tick_params(axis='y', which='major', length=6, width=1.2,
                    color=COLORS['text_main'])
     ax.tick_params(axis='y', which='minor', length=3, width=0.6, color='#999999')
