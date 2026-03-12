@@ -1426,7 +1426,7 @@ def _manual_df_to_ecrf_and_stats(
         for _, row in grp.iterrows():
             tp       = row["timepoint"]
             mean_val = row["mean"]
-            sd_val   = row["sd"]   if pd.notna(row["sd"])   else 0.0
+            sd_val   = 0.0
             n_val    = int(row["n"]) if pd.notna(row["n"]) else 0
             pct      = row["pct_change"] if pd.notna(row["pct_change"]) else None
 
@@ -1670,15 +1670,7 @@ def run_manual_entry_flow():
     )
 
     detected_tps = list(dict.fromkeys(manual_df["timepoint"].tolist()))
-    bl_tp_key    = _normalise_tp(baseline_map[confirmed_names[0]])
-    bl_default   = detected_tps.index(bl_tp_key) if bl_tp_key in detected_tps else 0
-    review_bl    = st.selectbox(
-        "Baseline timepoint (confirm after editing)",
-        options=detected_tps,
-        index=bl_default,
-        format_func=lambda t: f"{TP_DISPLAY.get(t, t)} ({t})",
-        key="me_review_bl",
-    )
+    review_bl    = detected_tps[0]
 
     ecrf_m, stats_m, dirs_m = _manual_df_to_ecrf_and_stats(
         manual_df, study_ref, review_bl
@@ -1770,7 +1762,7 @@ def run_manual_entry_flow():
             file_name=f"{study_ref.replace(' ', '_')}_manual_charts.pdf",
             mime="application/pdf",
         )
-        
+
 def run_excel_flow():
     # ══════════════════════════════════════════════
     # STEP 1 — Upload
