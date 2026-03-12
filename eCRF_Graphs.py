@@ -1513,7 +1513,6 @@ def run_manual_entry_flow():
         "Enter pre-computed summary statistics directly — no raw subject data needed."
     )
 
-    col_a, col_b = st.columns(2)
     col_a, col_b, col_c = st.columns(3)
     study_num    = col_a.text_input("Study Number", placeholder="e.g. CS251037")
     analysis_lbl = col_b.text_input("Analysis Type", placeholder="e.g. Photography Analysis, Expert Grading")
@@ -1650,7 +1649,7 @@ def run_manual_entry_flow():
 
                 all_rows.append({
                     "parameter":  p_name,
-                    "timepoint":  tp,            # still canonical key — _normalise_tp already ran in _parse_tp_list
+                    "timepoint":  tp,
                     "n":          int(_safe_float(n_raw) or 0),
                     "mean":       _safe_float(mn_raw) or 0.0,
                     "p_value":    "" if is_bl else pv_raw.strip(),
@@ -1663,12 +1662,9 @@ def run_manual_entry_flow():
         submitted = st.form_submit_button("✔ Submit", type="primary")
 
     if submitted:
-        # FIX: allow mean == 0.0 for baseline rows; only require parameter name
         valid = [r for r in all_rows if r["parameter"].strip() and r["mean"] is not None]
         if valid:
             df_submitted = pd.DataFrame(valid)
-            # timepoints are already canonical keys from _parse_tp_list → no re-normalise needed
-            # but run it anyway as a safety net
             df_submitted["timepoint"] = df_submitted["timepoint"].apply(_normalise_tp)
             st.session_state["me_submitted_df"] = df_submitted
         else:
@@ -1677,34 +1673,8 @@ def run_manual_entry_flow():
     if "me_submitted_df" not in st.session_state:
         st.stop()
 
-    # ══════════════════════════════════════════════
-    # PHASE 3 — REVIEW & EDIT
-    # ══════════════════════════════════════════════
-    st.divider()
-    st.subheader("Phase 3 — Review & Edit")
-    st.caption("Edit any cell inline. Changes here feed directly into the charts.")
-
     manual_df = st.session_state["me_submitted_df"]
 
-    col_cfg = {
-        "parameter":  st.column_config.TextColumn("Parameter"),
-        "timepoint":  st.column_config.TextColumn("Time Point"),
-        "n":          st.column_config.NumberColumn("n", min_value=0, step=1),
-        "mean":       st.column_config.NumberColumn("Mean", format="%.4f"),
-        "p_value":    st.column_config.TextColumn("p-value"),
-        "pct_change": st.column_config.NumberColumn(
-                          "Mean % Improvement From Baseline", format="%.2f"),
-    }
-    display_cols = [c for c in col_cfg if c in manual_df.columns]
-    manual_df = st.data_editor(
-        manual_df[display_cols],
-        num_rows="dynamic",
-        use_container_width=True,
-        hide_index=True,
-        column_config={k: v for k, v in col_cfg.items() if k in display_cols},
-    )
-
-    # FIX: derive baseline from first tp seen per parameter, not just first row overall
     first_tp_per_param = (
         manual_df.groupby("parameter", sort=False)["timepoint"]
         .first()
@@ -1712,23 +1682,22 @@ def run_manual_entry_flow():
     )
 
     ecrf_m, stats_m, dirs_m = _manual_df_to_ecrf_and_stats(
-    manual_df, study_ref,
-    next(iter(first_tp_per_param.values())) if first_tp_per_param else "BL",
+        manual_df, study_ref,
+        next(iter(first_tp_per_param.values())) if first_tp_per_param else "BL",
     )
     ecrf_m.n_included = int(manual_df["n"].max()) if manual_df["n"].notna().any() else 0
     keep_m = list(ecrf_m.parameters.keys())
 
-    # FIX: derive active_tps from the actual stat dict keys, not detected_tps from df
     active_tps_m = sorted(
         set(tp for s in stats_m.values() for tp in s.keys()),
         key=tp_sort_key,
     )
 
     # ══════════════════════════════════════════════
-    # PHASE 4 — IMPROVEMENT DIRECTION
+    # PHASE 3 — IMPROVEMENT DIRECTION
     # ══════════════════════════════════════════════
     st.divider()
-    st.subheader("Phase 4 — Improvement Direction")
+    st.subheader("Phase 3 — Improvement Direction")
 
     dir_mode_m = st.radio(
         "Direction setting",
@@ -1759,18 +1728,15 @@ def run_manual_entry_flow():
     chart_titles_m = {k: f"{study_ref} — {k}" for k in keep_m}
 
     # ══════════════════════════════════════════════
-    # PHASE 5 — PREVIEW
+    # PHASE 4 — PREVIEW
     # ══════════════════════════════════════════════
     st.divider()
-    st.subheader("Phase 5 — Preview")
+    st.subheader("Phase 4 — Preview")
 
     preview_m = st.selectbox("Preview parameter", options=keep_m, key="me_preview")
     if preview_m:
         param_stats_m = stats_m.get(preview_m, {})
         if param_stats_m:
-            st.write("active_tps_m:", active_tps_m)
-            st.write("param_stats keys:", list(param_stats_m.keys()))
-            st.write("ecrf baseline_prefix:", ecrf_m.baseline_prefix)
             fig_m = create_parameter_chart(
                 ecrf_m,
                 ecrf_m.parameters[preview_m],
@@ -1789,13 +1755,13 @@ def run_manual_entry_flow():
                     "Check that at least one non-baseline timepoint has a mean value."
                 )
         else:
-            st.info("No stats found for this parameter — check the data in Phase 3.")
+            st.info("No stats found for this parameter — check the data entered in Phase 2.")
 
     # ══════════════════════════════════════════════
-    # PHASE 6 — GENERATE PDF
+    # PHASE 5 — GENERATE PDF
     # ══════════════════════════════════════════════
     st.divider()
-    st.subheader("Phase 6 — Generate PDF")
+    st.subheader("Phase 5 — Generate PDF")
     st.write(
         f"**{len(keep_m)}** parameter(s) · "
         f"**{len(active_tps_m)}** timepoint(s)"
@@ -1817,7 +1783,7 @@ def run_manual_entry_flow():
             file_name=f"{study_ref.replace(' ', '_')}_manual_charts.pdf",
             mime="application/pdf",
         )
-
+        
 def run_excel_flow():
     # ══════════════════════════════════════════════
     # STEP 1 — Upload
