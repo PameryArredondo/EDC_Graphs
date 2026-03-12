@@ -1557,7 +1557,7 @@ def run_manual_entry_flow():
                                     disabled=is_bl)
                 row["pct_subjects"] = None if is_bl else _safe_float(pct_subj_raw)
 
-        col_sub = st.columns([1, 3])[0]
+        col_sub   = st.columns([1, 3])[0]
         submitted = col_sub.form_submit_button("✔ Update", type="primary")
 
     # Handle submit outside the form block
