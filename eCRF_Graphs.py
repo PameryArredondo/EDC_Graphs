@@ -1686,8 +1686,8 @@ def run_manual_entry_flow():
 
     dir_mode_m = st.radio(
         "Direction setting",
-        options=["Auto-detected", "Decrease= Improvement",
-                 "Increase= Improvement", "Per parameter"],
+        options=["Auto-detected", "All Lower = Improvement",
+                 "All Higher = Improvement", "Per parameter"],
         horizontal=True,
         key="me_dir_mode",
     )
