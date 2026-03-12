@@ -1149,7 +1149,7 @@ def summarise_data_quality(issues: dict) -> dict:
 def draw_solid_bar(ax, x, y, width, height, color):
     from matplotlib.path import Path as MplPath
     from matplotlib.patches import PathPatch
-    r     = min(width * 0.2, height * 0.15, 0.08)
+    r     = min(width * 0.2, height * 0.015)
     verts = [(x, y), (x, y+height-r), (x, y+height), (x+r, y+height),
              (x+width-r, y+height), (x+width, y+height),
              (x+width, y+height-r), (x+width, y), (x, y)]
