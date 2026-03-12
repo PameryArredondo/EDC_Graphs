@@ -1468,10 +1468,6 @@ def _manual_df_to_ecrf_and_stats(
     return ecrf, all_param_stats, auto_dirs
 
 
-# ═══════════════════════════════════════════════════════════════
-# MANUAL ENTRY FLOW
-# ═══════════════════════════════════════════════════════════════
-
 def run_manual_entry_flow():
     st.header("Manual Entry")
     st.caption(
@@ -1494,7 +1490,6 @@ def run_manual_entry_flow():
     )
     n_params = int(n_params)
 
-    # Parameter name inputs
     param_names = []
     pcols = st.columns(min(n_params, 4))
     for i in range(n_params):
@@ -1503,16 +1498,15 @@ def run_manual_entry_flow():
                 f"Parameter {i + 1} name",
                 value=st.session_state.get(f"me_pname_{i}", f"Parameter {i + 1}"),
                 key=f"me_pname_{i}",
-                placeholder=f"e.g. FIRM, HYDRA, WRINK",
+                placeholder="e.g. FIRM, HYDRA, WRINK",
             )
             param_names.append(name.strip())
 
-    # Shared vs per-parameter timepoints
     shared_tps = st.checkbox(
         "All parameters share the same timepoints", value=True, key="me_shared_tps"
     )
 
-    param_tp_map: dict[str, list[str]] = {}  # param_name -> [tp, ...]
+    param_tp_map: dict[str, list[str]] = {}
 
     if shared_tps:
         tp_raw = st.text_input(
@@ -1537,7 +1531,6 @@ def run_manual_entry_flow():
                 )
                 param_tp_map[name] = _parse_tp_list(tp_raw)
 
-    # Validate before allowing confirm
     all_names_filled = all(n for n in param_names)
     all_tps_filled   = all(len(v) > 0 for v in param_tp_map.values())
     setup_ready      = all_names_filled and all_tps_filled
@@ -1562,21 +1555,19 @@ def run_manual_entry_flow():
     if not st.session_state.get("me_setup_confirmed"):
         st.stop()
 
-    # Recover confirmed structure from session state
     confirmed_names  = st.session_state["me_param_names"]
     confirmed_tp_map = st.session_state["me_param_tp_map"]
 
     # ══════════════════════════════════════════════
-    # PHASE 2 — DATA ENTRY (one form per parameter)
+    # PHASE 2 — DATA ENTRY
     # ══════════════════════════════════════════════
     st.divider()
     st.subheader("Phase 2 — Enter Statistics")
     st.caption(
         "Fill in the statistics for each parameter. "
-        "p-value, % improvement, and % subjects improved are disabled for the baseline row."
+        "p-value and % improvement are disabled for the baseline row."
     )
 
-    # First timepoint in each parameter's list is the baseline
     baseline_map = {name: confirmed_tp_map[name][0] for name in confirmed_names}
 
     st.divider()
@@ -1616,12 +1607,12 @@ def run_manual_entry_flow():
                                            disabled=is_bl)
 
                 all_rows.append({
-                    "parameter":   p_name,
-                    "timepoint":   tp,
-                    "n":           int(_safe_float(n_raw) or 0),
-                    "mean":        _safe_float(mn_raw) or 0.0,
-                    "p_value":     "" if is_bl else pv_raw.strip(),
-                    "pct_change":  None if is_bl else _safe_float(pct_raw),
+                    "parameter":  p_name,
+                    "timepoint":  tp,            # still canonical key — _normalise_tp already ran in _parse_tp_list
+                    "n":          int(_safe_float(n_raw) or 0),
+                    "mean":       _safe_float(mn_raw) or 0.0,
+                    "p_value":    "" if is_bl else pv_raw.strip(),
+                    "pct_change": None if is_bl else _safe_float(pct_raw),
                 })
 
             if p_idx < len(confirmed_names) - 1:
@@ -1630,10 +1621,12 @@ def run_manual_entry_flow():
         submitted = st.form_submit_button("✔ Submit", type="primary")
 
     if submitted:
-        valid = [r for r in all_rows
-                 if r["parameter"].strip() and r["mean"] not in (None, 0.0)]
+        # FIX: allow mean == 0.0 for baseline rows; only require parameter name
+        valid = [r for r in all_rows if r["parameter"].strip() and r["mean"] is not None]
         if valid:
             df_submitted = pd.DataFrame(valid)
+            # timepoints are already canonical keys from _parse_tp_list → no re-normalise needed
+            # but run it anyway as a safety net
             df_submitted["timepoint"] = df_submitted["timepoint"].apply(_normalise_tp)
             st.session_state["me_submitted_df"] = df_submitted
         else:
@@ -1669,14 +1662,26 @@ def run_manual_entry_flow():
         column_config={k: v for k, v in col_cfg.items() if k in display_cols},
     )
 
-    detected_tps = list(dict.fromkeys(manual_df["timepoint"].tolist()))
-    review_bl    = detected_tps[0]
+    # FIX: derive baseline from first tp seen per parameter, not just first row overall
+    first_tp_per_param = (
+        manual_df.groupby("parameter", sort=False)["timepoint"]
+        .first()
+        .to_dict()
+    )
 
     ecrf_m, stats_m, dirs_m = _manual_df_to_ecrf_and_stats(
-        manual_df, study_ref, review_bl
+        manual_df, study_ref,
+        # pass the most common first-tp as the global baseline
+        review_bl=next(iter(first_tp_per_param.values())) if first_tp_per_param else "BL",
     )
     ecrf_m.n_included = int(manual_df["n"].max()) if manual_df["n"].notna().any() else 0
     keep_m = list(ecrf_m.parameters.keys())
+
+    # FIX: derive active_tps from the actual stat dict keys, not detected_tps from df
+    active_tps_m = sorted(
+        set(tp for s in stats_m.values() for tp in s.keys()),
+        key=tp_sort_key,
+    )
 
     # ══════════════════════════════════════════════
     # PHASE 4 — IMPROVEMENT DIRECTION
@@ -1693,9 +1698,9 @@ def run_manual_entry_flow():
     )
     if dir_mode_m == "Auto-detected":
         imp_dirs_m = dirs_m
-    elif dir_mode_m == "All Lower = Improvement":
+    elif dir_mode_m == "Decrease = Improvement":
         imp_dirs_m = {k: "lower" for k in keep_m}
-    elif dir_mode_m == "All Higher = Improvement":
+    elif dir_mode_m == "Increase = Improvement":
         imp_dirs_m = {k: "higher" for k in keep_m}
     else:
         imp_dirs_m = {}
@@ -1708,9 +1713,8 @@ def run_manual_entry_flow():
                     index=0 if dirs_m.get(k, "lower") == "lower" else 1,
                     key=f"me_dir_{k}",
                 )
-                imp_dirs_m[k] = "lower" if "Lower" in ch else "higher"
+                imp_dirs_m[k] = "lower" if "Decrease" in ch else "higher"
 
-    active_tps_m   = sorted(detected_tps, key=tp_sort_key)
     chart_titles_m = {k: f"{study_ref} — {k}" for k in keep_m}
 
     # ══════════════════════════════════════════════
@@ -1720,21 +1724,28 @@ def run_manual_entry_flow():
     st.subheader("Phase 5 — Preview")
 
     preview_m = st.selectbox("Preview parameter", options=keep_m, key="me_preview")
-    if preview_m and stats_m.get(preview_m):
-        fig_m = create_parameter_chart(
-            ecrf_m,
-            ecrf_m.parameters[preview_m],
-            stats_m.get(preview_m, {}),
-            imp_dirs_m.get(preview_m, "lower"),
-            active_tps=active_tps_m,
-            custom_title=chart_titles_m.get(preview_m),
-            show_center=show_center,
-        )
-        if fig_m:
-            st.pyplot(fig_m, use_container_width=True)
-            plt.close(fig_m)
-    elif preview_m:
-        st.info("No chart data yet — fill in the statistics above and click Submit.")
+    if preview_m:
+        param_stats_m = stats_m.get(preview_m, {})
+        if param_stats_m:
+            fig_m = create_parameter_chart(
+                ecrf_m,
+                ecrf_m.parameters[preview_m],
+                param_stats_m,
+                imp_dirs_m.get(preview_m, "lower"),
+                active_tps=active_tps_m,
+                custom_title=chart_titles_m.get(preview_m),
+                show_center=show_center,
+            )
+            if fig_m:
+                st.pyplot(fig_m, use_container_width=True)
+                plt.close(fig_m)
+            else:
+                st.warning(
+                    f"Chart returned None for **{preview_m}**. "
+                    "Check that at least one non-baseline timepoint has a mean value."
+                )
+        else:
+            st.info("No stats found for this parameter — check the data in Phase 3.")
 
     # ══════════════════════════════════════════════
     # PHASE 6 — GENERATE PDF
@@ -2074,7 +2085,7 @@ def run_excel_flow():
             "Timepoints":   ", ".join(p.tp_columns.keys()),
             "BL Mean":      f"{bl_mean:.2f}" if bl_mean is not None else "—",
             "Last Mean":    f"{last_mean:.2f}" if last_mean is not None else "—",
-            "Auto Dir":     auto_dirs.get(base, "lower").upper(),
+            "Auto Dir": "Decrease = Improvement" if auto_dirs.get(base, "lower") == "lower" else "Increase = Improvement",
         })
 
     keep = st.multiselect(
@@ -2122,7 +2133,7 @@ def run_excel_flow():
                     index=0 if auto_dirs.get(base, "lower") == "lower" else 1,
                     key=f"dir_{base}",
                 )
-                improvement_dirs[base] = "lower" if "Lower" in choice else "higher"
+                improvement_dirs[base] = "lower" if "Decrease" in choice else "higher"
 
     # ══════════════════════════════════════════════
     # STEP 6/7 — Chart Titles
