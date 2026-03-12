@@ -891,7 +891,7 @@ def round_half_up(value, decimals=2):
     return float(d.quantize(Decimal(10) ** -decimals, rounding=ROUND_HALF_UP))
 
 def fmt_value(value, decimals=2):
-    return f"{round_half_up(value, decimals):.{decimals}f}"
+    return f"{round_half_up(value, decimals):,.{decimals}f}"
 
 
 # ═══════════════════════════════════════════════════════════════
