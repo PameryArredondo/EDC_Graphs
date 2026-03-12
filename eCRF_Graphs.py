@@ -1249,7 +1249,7 @@ def create_parameter_chart(ecrf, param, param_stats, improvement_dir,
         ax.text(x_pos[i], means[i]/2, lbl, ha='center', va='center',
                 fontsize=12, color='white', fontweight='bold', zorder=6)
 
-    # ═══════════════════════════════════════════════════════════════
+   # ═══════════════════════════════════════════════════════════════
     # 1. APPLY AXIS STYLING FIRST
     # ═══════════════════════════════════════════════════════════════
     ax.set_xticks(x_pos)
@@ -1258,9 +1258,23 @@ def create_parameter_chart(ecrf, param, param_stats, improvement_dir,
     ax.set_axisbelow(True)
     ax.yaxis.grid(True, color='#E4E4E4', linewidth=1)
     ax.xaxis.grid(False)
-    tick_interval = max(0.5, round_half_up((y_max / 10), 0))
+
+    # --- NEW DYNAMIC Y-AXIS SCALING ---
+    raw_interval = max(y_max, 1.0) / 8
+    magnitude = 10 ** np.floor(np.log10(raw_interval))
+    residual = raw_interval / magnitude
+    
+    if residual <= 1.5:   step = 1
+    elif residual <= 3.5: step = 2
+    elif residual <= 7.5: step = 5
+    else:                 step = 10
+        
+    tick_interval = max(0.5, step * magnitude)
+    
     ax.yaxis.set_major_locator(plt.MultipleLocator(tick_interval))
     ax.yaxis.set_minor_locator(plt.MultipleLocator(tick_interval / 2))
+    # ----------------------------------
+
     ax.tick_params(axis='y', which='major', length=6, width=1.2,
                    color=COLORS['text_main'])
     ax.tick_params(axis='y', which='minor', length=3, width=0.6, color='#999999')
