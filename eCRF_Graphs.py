@@ -1217,9 +1217,9 @@ def create_parameter_chart(ecrf, param, param_stats, improvement_dir,
     x_pos  = np.arange(len(ordered_tps))
     means  = [param_stats[tp]['mean'] for tp in ordered_tps]
     ns     = [param_stats[tp]['n']    for tp in ordered_tps]
-    labels =[TP_DISPLAY.get(tp, tp)  for tp in ordered_tps]
+    labels = [TP_DISPLAY.get(tp, tp)  for tp in ordered_tps]
 
-    bar_colors =[]
+    bar_colors = []
     for tp in ordered_tps:
         if tp == bl_prefix:
             bar_colors.append(COLORS['baseline'])
@@ -1249,7 +1249,7 @@ def create_parameter_chart(ecrf, param, param_stats, improvement_dir,
         ax.text(x_pos[i], means[i]/2, lbl, ha='center', va='center',
                 fontsize=12, color='white', fontweight='bold', zorder=6)
 
-   # ═══════════════════════════════════════════════════════════════
+    # ═══════════════════════════════════════════════════════════════
     # 1. APPLY AXIS STYLING FIRST
     # ═══════════════════════════════════════════════════════════════
     ax.set_xticks(x_pos)
@@ -1259,38 +1259,34 @@ def create_parameter_chart(ecrf, param, param_stats, improvement_dir,
     ax.yaxis.grid(True, color='#E4E4E4', linewidth=1)
     ax.xaxis.grid(False)
 
-    # --- NEW DYNAMIC Y-AXIS SCALING ---
     raw_interval = max(y_max, 1.0) / 8
-    magnitude = 10 ** np.floor(np.log10(raw_interval))
-    residual = raw_interval / magnitude
-    
+    magnitude    = 10 ** np.floor(np.log10(raw_interval))
+    residual     = raw_interval / magnitude
     if residual <= 1.5:   step = 1
     elif residual <= 3.5: step = 2
     elif residual <= 7.5: step = 5
     else:                 step = 10
-        
     tick_interval = max(0.5, step * magnitude)
-    
+
     ax.yaxis.set_major_locator(plt.MultipleLocator(tick_interval))
     ax.yaxis.set_minor_locator(plt.MultipleLocator(tick_interval / 2))
-    # ----------------------------------
-
     ax.tick_params(axis='y', which='major', length=6, width=1.2,
                    color=COLORS['text_main'])
     ax.tick_params(axis='y', which='minor', length=3, width=0.6, color='#999999')
     ax.spines['left'].set_visible(True)
     ax.spines['left'].set_color('#BBBBBB')
     ax.spines['left'].set_linewidth(1.2)
+    ax.set_xlabel("Timepoint", fontsize=13, fontweight='bold')
 
     if len(set(ns)) > 1:
         for i in range(len(ordered_tps)):
-            ax.text(x_pos[i], -y_max * 0.04, f"n={ns[i]}", ha='center', va='top',
-                    fontsize=8, color=COLORS['text_sub'])
-
-    ax.set_xlabel("Timepoint", fontsize=13, fontweight='bold')
+            n_val = ns[i]
+            if n_val and n_val > 0:
+                ax.text(x_pos[i], -y_max * 0.08, f"n={n_val}", ha='center', va='top',
+                        fontsize=8, color=COLORS['text_sub'])
 
     # ═══════════════════════════════════════════════════════════════
-    # 2. ADD MAIN TITLES AND LEGENDS
+    # 2. ADD MAIN TITLES AND FOOTNOTE
     # ═══════════════════════════════════════════════════════════════
     title_main = custom_title or f"{ecrf.study_ref} — {param.display_name}"
     fig.text(0.5, 0.97, title_main, ha='center', va='top',
@@ -1306,11 +1302,11 @@ def create_parameter_chart(ecrf, param, param_stats, improvement_dir,
     # ═══════════════════════════════════════════════════════════════
     # 3. LOCK LAYOUT BEFORE CALCULATING ABSOLUTE FIGURE POSITIONS
     # ═══════════════════════════════════════════════════════════════
-    plt.tight_layout(rect=[0, 0.06, 1, 0.78])
+    plt.tight_layout(rect=[0, 0.09, 1, 0.78])
     fig.canvas.draw()
 
     # ═══════════════════════════════════════════════════════════════
-    # 4. DRAW PILLS, BADGES, AND ABSOLUTE POSITIONED SHAPES
+    # 4. DRAW PILL BADGES (position calculated after layout is locked)
     # ═══════════════════════════════════════════════════════════════
     for i, tp in enumerate(ordered_tps):
         if tp == bl_prefix:
@@ -1324,23 +1320,27 @@ def create_parameter_chart(ecrf, param, param_stats, improvement_dir,
                             bg_color=bar_colors[i], text_color='white',
                             fontsize=10, pad_x=0.3, pad_y=0.08)
 
-    # Subtitle chip row — direction chip is per-chart
+    # ═══════════════════════════════════════════════════════════════
+    # 5. DRAW SUBTITLE CHIPS
+    # ═══════════════════════════════════════════════════════════════
     dir_label = ("Decrease = Improvement" if improvement_dir == "lower"
                  else "Increase = Improvement")
+    n_chip = (f"n={max(ns)} Included Subjects" if len(set(ns)) == 1
+              else f"n={min(ns)}–{max(ns)} Included Subjects")
     if show_center and CENTER_FILTER:
-        chip_texts =[f"Center: {CENTER_FILTER}",
-                      f"n={ecrf.n_included} Included Subjects",
-                      dir_label]
+        chip_texts = [f"Center: {CENTER_FILTER}", n_chip, dir_label]
     else:
-        chip_texts =[f"n={ecrf.n_included} Included Subjects", dir_label]
+        chip_texts = [n_chip, dir_label]
 
     chip_gap     = 0.22
     chip_start_x = 0.5 - (len(chip_texts) - 1) * chip_gap / 2
-    
-    fig.canvas.draw() # Recalculate to ensure text bounds for chips are correct
+    fig.canvas.draw()  # recalculate to ensure text bounds for chips are correct
     for ci, ct in enumerate(chip_texts):
         draw_pill_chip(fig, chip_start_x + ci * chip_gap, 0.855, ct, fontsize=9.5)
 
+    # ═══════════════════════════════════════════════════════════════
+    # 6. DRAW LEGEND
+    # ═══════════════════════════════════════════════════════════════
     x_start = 0.125
     for color, label in [(COLORS['baseline'], "Baseline"),
                           (COLORS['improved'], "Improved from Baseline"),
