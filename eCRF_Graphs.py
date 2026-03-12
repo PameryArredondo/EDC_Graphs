@@ -1686,8 +1686,8 @@ def run_manual_entry_flow():
 
     dir_mode_m = st.radio(
         "Direction setting",
-        options=["Auto-detected", "All Lower = Improvement",
-                 "All Higher = Improvement", "Per parameter"],
+        options=["Auto-detected", "Decrease = Improvement",
+                 "Increase = Improvement", "Per parameter"],
         horizontal=True,
         key="me_dir_mode",
     )
@@ -1704,7 +1704,7 @@ def run_manual_entry_flow():
             with dcols[i % len(dcols)]:
                 ch = st.radio(
                     f"**{k}**",
-                    ["Lower = Improvement", "Higher = Improvement"],
+                    ["Decrease = Improvement", "Increase = Improvement"],
                     index=0 if dirs_m.get(k, "lower") == "lower" else 1,
                     key=f"me_dir_{k}",
                 )
