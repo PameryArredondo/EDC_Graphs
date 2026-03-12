@@ -1161,18 +1161,30 @@ def draw_solid_bar(ax, x, y, width, height, color):
 
 def draw_pill_badge(ax, x_center, y_center, text, bg_color, text_color='white',
                     fontsize=10, pad_x=0.35, pad_y=0.12):
-    txt  = ax.text(x_center, y_center, text, ha='center', va='center',
-                   fontsize=fontsize, fontweight='bold', color=text_color, zorder=6)
-    rend = ax.get_figure().canvas.get_renderer()
-    bbox = ax.transData.inverted().transform(txt.get_window_extent(renderer=rend))
-    w    = bbox[1][0] - bbox[0][0] + pad_x
-    h    = bbox[1][1] - bbox[0][1] + pad_y
-    ax.add_patch(FancyBboxPatch(
-        (x_center - w/2, y_center - h/2), w, h,
+    fig      = ax.get_figure()
+    bar_width = 0.55
+
+    left_disp  = ax.transData.transform((x_center - bar_width/2, y_center))
+    right_disp = ax.transData.transform((x_center + bar_width/2, y_center))
+    top_disp   = ax.transData.transform((x_center, y_center))
+
+    left_fig  = fig.transFigure.inverted().transform(left_disp)
+    right_fig = fig.transFigure.inverted().transform(right_disp)
+    top_fig   = fig.transFigure.inverted().transform(top_disp)
+
+    fx = (left_fig[0] + right_fig[0]) / 2
+    fy = top_fig[1] + 0.02
+    w  = right_fig[0] - left_fig[0]
+    h  = 0.035
+
+    fig.patches.append(FancyBboxPatch(
+        (fx - w/2, fy - h/2), w, h,
         boxstyle=f"round,pad=0,rounding_size={h/2}",
-        ec="none", fc=bg_color, alpha=1.0, zorder=5))
-
-
+        ec="none", fc=bg_color, alpha=1.0, zorder=5,
+        transform=fig.transFigure, clip_on=False))
+    fig.text(fx, fy, text, ha='center', va='center',
+             fontsize=fontsize, fontweight='bold', color=text_color, zorder=6)
+    
 def draw_pill_chip(fig, x_center, y_center, text, fontsize=9,
                    pad_x=0.012, pad_y=0.006):
     txt  = fig.text(x_center, y_center, text, ha='center', va='center',
@@ -1205,9 +1217,9 @@ def create_parameter_chart(ecrf, param, param_stats, improvement_dir,
     x_pos  = np.arange(len(ordered_tps))
     means  = [param_stats[tp]['mean'] for tp in ordered_tps]
     ns     = [param_stats[tp]['n']    for tp in ordered_tps]
-    labels = [TP_DISPLAY.get(tp, tp)  for tp in ordered_tps]
+    labels =[TP_DISPLAY.get(tp, tp)  for tp in ordered_tps]
 
-    bar_colors = []
+    bar_colors =[]
     for tp in ordered_tps:
         if tp == bl_prefix:
             bar_colors.append(COLORS['baseline'])
@@ -1237,19 +1249,9 @@ def create_parameter_chart(ecrf, param, param_stats, improvement_dir,
         ax.text(x_pos[i], means[i]/2, lbl, ha='center', va='center',
                 fontsize=12, color='white', fontweight='bold', zorder=6)
 
-    fig.canvas.draw()
-    for i, tp in enumerate(ordered_tps):
-        if tp == bl_prefix:
-            continue
-        pct = param_stats[tp].get('pct_change')
-        if pct is not None:
-            dpct  = -pct if improvement_dir == "lower" else pct
-            sign  = "+" if dpct > 0 else ""
-            label = f"{sign}{fmt_value(dpct)}%"
-            draw_pill_badge(ax, x_pos[i], means[i] + y_max * 0.045, label,
-                            bg_color=bar_colors[i], text_color='white',
-                            fontsize=10, pad_x=0.3, pad_y=0.08)
-
+    # ═══════════════════════════════════════════════════════════════
+    # 1. APPLY AXIS STYLING FIRST
+    # ═══════════════════════════════════════════════════════════════
     ax.set_xticks(x_pos)
     ax.set_xticklabels(labels, fontsize=12, fontweight='bold')
     ax.set_ylabel("Mean", fontsize=13, fontweight='bold')
@@ -1273,33 +1275,57 @@ def create_parameter_chart(ecrf, param, param_stats, improvement_dir,
 
     ax.set_xlabel("Timepoint", fontsize=13, fontweight='bold')
 
+    # ═══════════════════════════════════════════════════════════════
+    # 2. ADD MAIN TITLES AND LEGENDS
+    # ═══════════════════════════════════════════════════════════════
     title_main = custom_title or f"{ecrf.study_ref} — {param.display_name}"
     fig.text(0.5, 0.97, title_main, ha='center', va='top',
              fontsize=17, fontweight='bold', color=COLORS['text_main'])
     fig.text(0.5, 0.92, "Mean by Timepoint", ha='center', va='top',
              fontsize=13, fontweight='medium', color=COLORS['text_sub'])
-
-    # Subtitle chip row — direction chip is per-chart
-    dir_label = ("Decrease = Improvement" if improvement_dir == "lower"
-                 else "Increase = Improvement")
-    if show_center and CENTER_FILTER:
-        chip_texts = [f"Center: {CENTER_FILTER}",
-                      f"n={ecrf.n_included} Included Subjects",
-                      dir_label]
-    else:
-        chip_texts = [f"n={ecrf.n_included} Included Subjects", dir_label]
-
-    chip_gap     = 0.22
-    chip_start_x = 0.5 - (len(chip_texts) - 1) * chip_gap / 2
-    fig.canvas.draw()
-    for ci, ct in enumerate(chip_texts):
-        draw_pill_chip(fig, chip_start_x + ci * chip_gap, 0.855, ct, fontsize=9.5)
-
     fig.text(0.5, 0.82,
              "Values above bars = % improvement from baseline · "
              "* indicates statistical significance (p < 0.05, paired t-test)",
              ha='center', va='top', fontsize=9.5,
              color=COLORS['text_sub'], style='italic')
+
+    # ═══════════════════════════════════════════════════════════════
+    # 3. LOCK LAYOUT BEFORE CALCULATING ABSOLUTE FIGURE POSITIONS
+    # ═══════════════════════════════════════════════════════════════
+    plt.tight_layout(rect=[0, 0.06, 1, 0.78])
+    fig.canvas.draw()
+
+    # ═══════════════════════════════════════════════════════════════
+    # 4. DRAW PILLS, BADGES, AND ABSOLUTE POSITIONED SHAPES
+    # ═══════════════════════════════════════════════════════════════
+    for i, tp in enumerate(ordered_tps):
+        if tp == bl_prefix:
+            continue
+        pct = param_stats[tp].get('pct_change')
+        if pct is not None:
+            dpct  = -pct if improvement_dir == "lower" else pct
+            sign  = "+" if dpct > 0 else ""
+            label = f"{sign}{fmt_value(dpct)}%"
+            draw_pill_badge(ax, x_pos[i], means[i] + y_max * 0.015, label,
+                            bg_color=bar_colors[i], text_color='white',
+                            fontsize=10, pad_x=0.3, pad_y=0.08)
+
+    # Subtitle chip row — direction chip is per-chart
+    dir_label = ("Decrease = Improvement" if improvement_dir == "lower"
+                 else "Increase = Improvement")
+    if show_center and CENTER_FILTER:
+        chip_texts =[f"Center: {CENTER_FILTER}",
+                      f"n={ecrf.n_included} Included Subjects",
+                      dir_label]
+    else:
+        chip_texts =[f"n={ecrf.n_included} Included Subjects", dir_label]
+
+    chip_gap     = 0.22
+    chip_start_x = 0.5 - (len(chip_texts) - 1) * chip_gap / 2
+    
+    fig.canvas.draw() # Recalculate to ensure text bounds for chips are correct
+    for ci, ct in enumerate(chip_texts):
+        draw_pill_chip(fig, chip_start_x + ci * chip_gap, 0.855, ct, fontsize=9.5)
 
     x_start = 0.125
     for color, label in [(COLORS['baseline'], "Baseline"),
@@ -1310,7 +1336,6 @@ def create_parameter_chart(ecrf, param, param_stats, improvement_dir,
         fig.text(x_start + 0.02, 0.033, label, fontsize=9, color=COLORS['text_main'])
         x_start += 0.02 + len(label) * 0.006 + 0.03
 
-    plt.tight_layout(rect=[0, 0.06, 1, 0.78])
     return fig
 
 # ═══════════════════════════════════════════════════════════════
@@ -1475,8 +1500,11 @@ def run_manual_entry_flow():
     )
 
     col_a, col_b = st.columns(2)
-    study_ref   = col_a.text_input("Study Number", placeholder="CSXXXXXX")
-    show_center = col_b.checkbox("Show center on charts", value=False)
+    col_a, col_b, col_c = st.columns(3)
+    study_num    = col_a.text_input("Study Number", placeholder="e.g. CS251037")
+    analysis_lbl = col_b.text_input("Analysis Type", placeholder="e.g. Photography Analysis, Expert Grading")
+    show_center  = col_c.checkbox("Show center on charts", value=False)
+    study_ref    = f"{study_num}: {analysis_lbl}".strip(": ") if study_num or analysis_lbl else ""
 
     # ══════════════════════════════════════════════
     # PHASE 1 — STRUCTURE SETUP
