@@ -1345,16 +1345,323 @@ def generate_pdf_bytes(ecrf, all_param_stats, improvement_dirs, chart_titles,
     buf.seek(0)
     return buf.read()
 
-def main():
-    st.set_page_config(page_title="eCRF Chart Generator",
-                       page_icon="📊", layout="wide")
-    st.title("📊 eCRF Chart Generator v1.5")
-    st.caption("Generates mean-change-from-baseline charts for eCRF data.")
+# ═══════════════════════════════════════════════════════════════
+# MANUAL ENTRY FLOW
+# ═══════════════════════════════════════════════════════════════
 
-    for key in ("ecrf", "all_param_stats", "auto_dirs", "uploaded_file_name"):
-        if key not in st.session_state:
-            st.session_state[key] = None
+def _normalise_tp(raw: str) -> str:
+    """Convert display labels (e.g. 'Week 4') back to canonical keys (e.g. 'W4')."""
+    raw   = raw.strip()
+    upper = raw.upper()
+    if upper in KNOWN_TP_ORDER:
+        return upper
+    for k, v in TP_DISPLAY.items():
+        if v.upper() == upper:
+            return k
+    return upper
 
+
+def _split_mean_sd(cell: str) -> tuple[float | None, float | None]:
+    cell = cell.strip()
+    if not cell or cell.upper() in ("", "N/A", "—", "ND"):
+        return None, None
+    for sep in ("±", "+-", "+/-", "±"):
+        if sep in cell:
+            parts = cell.split(sep, 1)
+            mean  = _safe_float(parts[0].strip())
+            sd_s  = parts[1].strip()
+            sd    = None if sd_s.upper() in ("N/A", "—", "ND", "") \
+                    else _safe_float(sd_s)
+            return mean, sd
+    return _safe_float(cell), None
+
+
+def _parse_pct(s: str) -> float | None:
+    if not s:
+        return None
+    return _safe_float(s.strip().rstrip("%"))
+
+
+def _safe_float(s) -> float | None:
+    try:
+        return float(s)
+    except Exception:
+        return None
+
+
+def _manual_df_to_ecrf_and_stats(
+    df: pd.DataFrame,
+    study_ref: str,
+    baseline_tp: str,
+) -> tuple["ECRFData", dict, dict]:
+    ecrf = ECRFData()
+    ecrf.study_ref       = study_ref
+    ecrf.baseline_prefix = baseline_tp
+    ecrf.df              = pd.DataFrame()
+    ecrf.n_included      = int(df["n"].max()) if df["n"].notna().any() else 0
+
+    tp_order = []
+    seen: set = set()
+    for tp in df["timepoint"]:
+        if tp not in seen:
+            tp_order.append(tp)
+            seen.add(tp)
+    ecrf.timepoint_order = sorted(tp_order, key=tp_sort_key)
+
+    all_param_stats: dict = {}
+    auto_dirs: dict       = {}
+
+    for param_name, grp in df.groupby("parameter", sort=False):
+        pi        = ParameterInfo(param_name, param_name)
+        stat_dict = OrderedDict()
+        bl_mean   = None
+
+        for _, row in grp.iterrows():
+            tp       = row["timepoint"]
+            mean_val = row["mean"]
+            sd_val   = row["sd"]   if pd.notna(row["sd"])   else 0.0
+            n_val    = int(row["n"]) if pd.notna(row["n"]) else 0
+            pct      = row["pct_change"] if pd.notna(row["pct_change"]) else None
+
+            if tp == baseline_tp:
+                bl_mean = mean_val
+                pct     = None
+
+            p_raw = str(row.get("p_value", "")).strip()
+            sig   = "*" in p_raw or (
+                p_raw not in ("", "—", "N/A")
+                and _safe_float(p_raw) is not None
+                and _safe_float(p_raw) < 0.05
+            )
+
+            stat_dict[tp] = {
+                "mean":        mean_val,
+                "std":         sd_val,
+                "n":           n_val,
+                "pct_change":  pct,
+                "values":      np.array([mean_val]),
+                "significant": sig,
+            }
+            pi.tp_columns[tp] = f"__manual__{tp}"
+
+        if bl_mean is not None and bl_mean != 0:
+            for tp, s in stat_dict.items():
+                if tp != baseline_tp and s["pct_change"] is None:
+                    s["pct_change"] = ((s["mean"] - bl_mean) / bl_mean) * 100
+
+        non_bl = [(tp, s) for tp, s in stat_dict.items() if tp != baseline_tp]
+        if non_bl and bl_mean is not None:
+            auto_dirs[param_name] = "lower" if non_bl[-1][1]["mean"] <= bl_mean else "higher"
+        else:
+            auto_dirs[param_name] = "lower"
+
+        ecrf.parameters[param_name] = pi
+        all_param_stats[param_name] = stat_dict
+
+    return ecrf, all_param_stats, auto_dirs
+
+
+def run_manual_entry_flow():
+    st.header("Manual Entry")
+    st.caption(
+        "Enter pre-computed summary statistics directly — no raw subject data needed."
+    )
+
+    col_a, col_b = st.columns(2)
+    study_ref   = col_a.text_input("Study reference", value="My Study")
+    show_center = col_b.checkbox("Show center on charts", value=False)
+
+    manual_df: pd.DataFrame | None = None
+
+    # ── ROW-BY-ROW FORM ───────────────────────────────────────────
+    if "manual_rows" not in st.session_state:
+        st.session_state.manual_rows = [
+            {"parameter": "", "timepoint": "BL",
+             "n": 0, "mean": 0.0, "sd": 0.0,
+             "p_value": "", "pct_change": None, "pct_subjects": None}
+        ]
+
+    rows = st.session_state.manual_rows
+
+    hdr = st.columns([2, 1.5, 0.8, 1.4, 1.4, 1.2, 1.2, 1.2, 0.5])
+    for h, lbl in zip(hdr, ["Parameter", "Time Point", "n",
+                              "Mean", "SD ±",
+                              "p-value", "Mean % Improvement",
+                              "% Subjects Improved", ""]):
+        h.markdown(f"**{lbl}**")
+
+    for i, row in enumerate(rows):
+        c = st.columns([2, 1.5, 0.8, 1.4, 1.4, 1.2, 1.2, 1.2, 0.5])
+        row["parameter"] = c[0].text_input("Parameter", value=row["parameter"],
+                                            key=f"mr_param_{i}",
+                                            label_visibility="collapsed")
+        row["timepoint"] = c[1].text_input("Time Point", value=row["timepoint"],
+                                            key=f"mr_tp_{i}",
+                                            label_visibility="collapsed")
+        row["n"]         = c[2].number_input(
+                                "n", value=int(row["n"]) if row["n"] else 0,
+                                min_value=0, step=1, key=f"mr_n_{i}",
+                                label_visibility="collapsed")
+        row["mean"]      = c[3].number_input(
+                                "Mean", value=float(row["mean"]), format="%.4f",
+                                key=f"mr_mean_{i}", label_visibility="collapsed")
+        row["sd"]        = c[4].number_input(
+                                "SD", value=float(row["sd"]) if row["sd"] else 0.0,
+                                min_value=0.0, format="%.4f", key=f"mr_sd_{i}",
+                                label_visibility="collapsed")
+        # p-value, pct_change, pct_subjects — blank for baseline rows
+        row["p_value"]    = c[5].text_input("p-value", value=row["p_value"],
+                                              key=f"mr_pval_{i}",
+                                              label_visibility="collapsed",
+                                              placeholder="—")
+        pct_raw           = c[6].text_input(
+                                "Mean % Improvement",
+                                value=str(row["pct_change"])
+                                if row["pct_change"] is not None else "",
+                                key=f"mr_pct_{i}", label_visibility="collapsed",
+                                placeholder="—")
+        row["pct_change"] = _safe_float(pct_raw)
+        pct_subj_raw      = c[7].text_input(
+                                "% Subjects Improved",
+                                value=str(row["pct_subjects"])
+                                if row["pct_subjects"] is not None else "",
+                                key=f"mr_pctsubj_{i}", label_visibility="collapsed",
+                                placeholder="—")
+        row["pct_subjects"] = _safe_float(pct_subj_raw)
+        if c[8].button("✕", key=f"mr_del_{i}") and len(rows) > 1:
+            rows.pop(i)
+            st.rerun()
+
+    col_add1, _ = st.columns([1, 5])
+    if col_add1.button("＋ Add row"):
+        last_param = rows[-1]["parameter"] if rows else ""
+        rows.append({"parameter": last_param, "timepoint": "",
+                     "n": 0, "mean": 0.0, "sd": 0.0,
+                     "p_value": "", "pct_change": None, "pct_subjects": None})
+        st.rerun()
+
+    valid_rows = [r for r in rows
+                  if r["parameter"].strip() and r["timepoint"].strip()
+                  and r["mean"] != 0.0]
+    if valid_rows:
+        manual_df = pd.DataFrame(valid_rows)
+        manual_df["timepoint"] = manual_df["timepoint"].apply(_normalise_tp)
+
+    # ── EDITABLE REVIEW TABLE ─────────────────────────────────────
+    if manual_df is not None and not manual_df.empty:
+        st.divider()
+        st.subheader("Review & Edit")
+        st.caption("Edit cells inline before generating charts.")
+
+        # Column order matches: Parameter | Time Point | n | Mean ± SD | p-value |
+        #                       Mean Percent Improvement From Baseline |
+        #                       Percent of Subjects with Improvement
+        display_cols = [c for c in
+                        ["parameter", "timepoint", "n", "mean", "sd",
+                         "p_value", "pct_change", "pct_subjects"]
+                        if c in manual_df.columns]
+        col_cfg = {
+            "parameter":    st.column_config.TextColumn("Parameter"),
+            "timepoint":    st.column_config.TextColumn("Time Point"),
+            "n":            st.column_config.NumberColumn("n", min_value=0, step=1),
+            "mean":         st.column_config.NumberColumn("Mean", format="%.3f"),
+            "sd":           st.column_config.NumberColumn("SD",   format="%.3f"),
+            "p_value":      st.column_config.TextColumn("p-value"),
+            "pct_change":   st.column_config.NumberColumn("Mean % Improvement From Baseline", format="%.2f"),
+            "pct_subjects": st.column_config.NumberColumn("% Subjects with Improvement", format="%.2f"),
+        }
+        manual_df = st.data_editor(
+            manual_df[display_cols],
+            num_rows="dynamic",
+            use_container_width=True,
+            hide_index=True,
+            column_config={k: v for k, v in col_cfg.items() if k in display_cols},
+        )
+
+        detected_tps = list(manual_df["timepoint"].unique())
+        bl_default   = detected_tps.index("BL") if "BL" in detected_tps else 0
+        baseline_tp  = st.selectbox(
+            "Baseline timepoint", options=detected_tps, index=bl_default,
+            format_func=lambda t: f"{TP_DISPLAY.get(t, t)} ({t})",
+        )
+
+        ecrf_m, stats_m, dirs_m = _manual_df_to_ecrf_and_stats(
+            manual_df, study_ref, baseline_tp)
+        ecrf_m.n_included = (
+            int(manual_df["n"].max()) if manual_df["n"].notna().any() else 0
+        )
+        keep_m = list(ecrf_m.parameters.keys())
+
+        st.divider()
+        st.subheader("Improvement Direction")
+        dir_mode_m = st.radio(
+            "Direction setting",
+            options=["Auto-detected", "All Lower = Improvement",
+                     "All Higher = Improvement", "Per parameter"],
+            horizontal=True,
+        )
+        if dir_mode_m == "Auto-detected":
+            imp_dirs_m = dirs_m
+        elif dir_mode_m == "All Lower = Improvement":
+            imp_dirs_m = {k: "lower" for k in keep_m}
+        elif dir_mode_m == "All Higher = Improvement":
+            imp_dirs_m = {k: "higher" for k in keep_m}
+        else:
+            imp_dirs_m = {}
+            cols_d = st.columns(3)
+            for i, k in enumerate(keep_m):
+                with cols_d[i % 3]:
+                    ch = st.radio(
+                        f"**{k}**",
+                        ["Lower = Improvement", "Higher = Improvement"],
+                        index=0 if dirs_m.get(k, "lower") == "lower" else 1,
+                        key=f"mdir_{k}",
+                    )
+                    imp_dirs_m[k] = "lower" if "Lower" in ch else "higher"
+
+        active_tps_m   = sorted(detected_tps, key=tp_sort_key)
+        chart_titles_m = {k: f"{study_ref} — {k}" for k in keep_m}
+
+        st.divider()
+        st.subheader("Preview")
+        preview_m = st.selectbox("Preview parameter", options=keep_m)
+        if preview_m:
+            fig_m = create_parameter_chart(
+                ecrf_m,
+                ecrf_m.parameters[preview_m],
+                stats_m.get(preview_m, {}),
+                imp_dirs_m.get(preview_m, "lower"),
+                active_tps=active_tps_m,
+                custom_title=chart_titles_m.get(preview_m),
+                show_center=show_center,
+            )
+            if fig_m:
+                st.pyplot(fig_m, use_container_width=True)
+                plt.close(fig_m)
+
+        st.divider()
+        st.subheader("Generate PDF")
+        st.write(f"**{len(keep_m)}** parameter(s) · "
+                 f"**{len(active_tps_m)}** timepoint(s)")
+
+        if st.button("📄 Generate PDF", type="primary"):
+            progress_m  = st.progress(0, text="Starting…")
+            pdf_bytes_m = generate_pdf_bytes(
+                ecrf_m, stats_m, imp_dirs_m, chart_titles_m,
+                active_tps=active_tps_m,
+                show_center=show_center,
+                progress_bar=progress_m,
+            )
+            progress_m.empty()
+            st.success(f"✅ PDF generated — {len(keep_m)} chart(s).")
+            st.download_button(
+                label="⬇️ Download PDF",
+                data=pdf_bytes_m,
+                file_name=f"{study_ref.replace(' ', '_')}_manual_charts.pdf",
+                mime="application/pdf",
+            )
+            
+def run_excel_flow():
     # ══════════════════════════════════════════════
     # STEP 1 — Upload
     # ══════════════════════════════════════════════
@@ -1423,7 +1730,7 @@ def main():
     ecrf: ECRFData               = st.session_state.ecrf
     all_param_stats: OrderedDict = st.session_state.all_param_stats
     auto_dirs: dict              = st.session_state.auto_dirs
-    
+
     # ══════════════════════════════════════════════
     # STEP 2 — Subject Summary
     # ══════════════════════════════════════════════
@@ -1538,7 +1845,6 @@ def main():
                 if choice != "(skip)":
                     orphan_assignments[base] = choice
 
-        # ── Conflict detection & resolution ──────────────────────
         if orphan_assignments:
             conflicts = find_orphan_conflicts(ecrf, orphan_assignments, ecrf.df)
 
@@ -1590,7 +1896,6 @@ def main():
                         merge_decisions[f"__target_{c['orphan_base']}"] = c["existing_base"]
                         st.divider()
 
-                # Gate downstream steps until all conflicts are resolved
                 unresolved = [
                     c for c in conflicts
                     if c["orphan_base"] not in merge_decisions
@@ -1599,18 +1904,12 @@ def main():
                     st.info("Resolve all conflicts above to continue.")
                     st.stop()
 
-            # Apply assignments with user merge decisions
             ecrf = apply_orphan_assignments(ecrf, orphan_assignments, merge_decisions)
-
-            # Re-run deduplication so merged orphans fold into existing params,
-            # mirroring the VBA post-assignment GroupDuplicateParameters call
             ecrf.parameters = group_duplicate_parameters(
                 ecrf.parameters, ecrf.df, {}
             )
 
-            # Recompute stats for every affected parameter
             for base in orphan_assignments:
-                # If merged, the target key is the existing param, not the orphan
                 target = base
                 if merge_decisions.get(base):
                     for existing_base in ecrf.parameters:
@@ -1884,6 +2183,28 @@ def main():
             data=pdf_bytes,
             file_name=f"{stem}_eCRF_Charts.pdf",
             mime="application/pdf")
+
+
+def main():
+    st.set_page_config(page_title="eCRF Chart Generator",
+                       page_icon="📊", layout="wide")
+    st.title("📊 eCRF Chart Generator v1.6")
+    st.caption("Generates mean-change-from-baseline charts for eCRF data.")
+
+    for key in ("ecrf", "all_param_stats", "auto_dirs", "uploaded_file_name"):
+        if key not in st.session_state:
+            st.session_state[key] = None
+
+    input_mode = st.radio(
+        "Input mode",
+        options=["Upload Excel", "Manual Entry"],
+        horizontal=True,
+    )
+
+    if input_mode == "Upload Excel":
+        run_excel_flow()
+    else:
+        run_manual_entry_flow()
 
 
 if __name__ == "__main__":
