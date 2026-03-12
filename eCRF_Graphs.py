@@ -1312,7 +1312,6 @@ def create_parameter_chart(ecrf, param, param_stats, improvement_dir,
     plt.tight_layout(rect=[0, 0.06, 1, 0.78])
     return fig
 
-
 # ═══════════════════════════════════════════════════════════════
 # 16. PDF GENERATION
 # ═══════════════════════════════════════════════════════════════
@@ -1345,9 +1344,17 @@ def generate_pdf_bytes(ecrf, all_param_stats, improvement_dirs, chart_titles,
     buf.seek(0)
     return buf.read()
 
+
 # ═══════════════════════════════════════════════════════════════
-# MANUAL ENTRY FLOW
+# MANUAL ENTRY HELPERS
 # ═══════════════════════════════════════════════════════════════
+
+def _safe_float(s) -> float | None:
+    try:
+        return float(s)
+    except Exception:
+        return None
+
 
 def _normalise_tp(raw: str) -> str:
     """Convert display labels (e.g. 'Week 4') back to canonical keys (e.g. 'W4')."""
@@ -1359,6 +1366,13 @@ def _normalise_tp(raw: str) -> str:
         if v.upper() == upper:
             return k
     return upper
+
+
+def _parse_tp_list(raw: str) -> list[str]:
+    """Split, normalise, and deduplicate a comma-separated timepoint string."""
+    return list(dict.fromkeys(
+        _normalise_tp(t) for t in raw.split(",") if t.strip()
+    ))
 
 
 def _split_mean_sd(cell: str) -> tuple[float | None, float | None]:
@@ -1380,13 +1394,6 @@ def _parse_pct(s: str) -> float | None:
     if not s:
         return None
     return _safe_float(s.strip().rstrip("%"))
-
-
-def _safe_float(s) -> float | None:
-    try:
-        return float(s)
-    except Exception:
-        return None
 
 
 def _manual_df_to_ecrf_and_stats(
@@ -1461,6 +1468,10 @@ def _manual_df_to_ecrf_and_stats(
     return ecrf, all_param_stats, auto_dirs
 
 
+# ═══════════════════════════════════════════════════════════════
+# MANUAL ENTRY FLOW
+# ═══════════════════════════════════════════════════════════════
+
 def run_manual_entry_flow():
     st.header("Manual Entry")
     st.caption(
@@ -1468,222 +1479,298 @@ def run_manual_entry_flow():
     )
 
     col_a, col_b = st.columns(2)
-    study_ref   = col_a.text_input("Study reference", value="My Study")
+    study_ref   = col_a.text_input("Study Number", placeholder="CSXXXXXX")
     show_center = col_b.checkbox("Show center on charts", value=False)
 
-    manual_df: pd.DataFrame | None = None
+    # ══════════════════════════════════════════════
+    # PHASE 1 — STRUCTURE SETUP
+    # ══════════════════════════════════════════════
+    st.divider()
+    st.subheader("Phase 1 — Define Parameters & Timepoints")
 
-    # ── ROW-BY-ROW FORM ───────────────────────────────────────────
-    if "manual_rows" not in st.session_state:
-        st.session_state.manual_rows = [
-            {"parameter": "", "timepoint": "BL",
-             "n": 0, "mean": 0.0, "sd": 0.0,
-             "p_value": "", "pct_change": None, "pct_subjects": None}
-        ]
+    n_params = st.number_input(
+        "How many parameters?", min_value=1, max_value=30, value=1, step=1,
+        key="me_n_params",
+    )
+    n_params = int(n_params)
 
-    rows = st.session_state.manual_rows
+    # Parameter name inputs
+    param_names = []
+    pcols = st.columns(min(n_params, 4))
+    for i in range(n_params):
+        with pcols[i % len(pcols)]:
+            name = st.text_input(
+                f"Parameter {i + 1} name",
+                value=st.session_state.get(f"me_pname_{i}", f"Parameter {i + 1}"),
+                key=f"me_pname_{i}",
+                placeholder=f"e.g. FIRM, HYDRA, WRINK",
+            )
+            param_names.append(name.strip())
 
-    with st.form("manual_entry_form"):
-        hdr = st.columns([2, 1.5, 0.8, 1.4, 1.4, 1.2, 1.2, 1.2])
-        for h, lbl in zip(hdr, ["Parameter", "Time Point", "n",
-                                  "Mean", "SD ±", "p-value",
-                                  "Mean % Improvement", "% Subjects Improved"]):
-            h.markdown(f"**{lbl}**")
+    # Shared vs per-parameter timepoints
+    shared_tps = st.checkbox(
+        "All parameters share the same timepoints", value=True, key="me_shared_tps"
+    )
 
-        for p in range(n_params):
-            st.markdown(f"---")
+    param_tp_map: dict[str, list[str]] = {}  # param_name -> [tp, ...]
+
+    if shared_tps:
+        tp_raw = st.text_input(
+            "Timepoints (comma-separated)",
+            value=st.session_state.get("me_tp_global", "BL, W4, W8, W12"),
+            key="me_tp_global",
+            placeholder="e.g. BL, W4, W8, W12",
+        )
+        tps_global = _parse_tp_list(tp_raw)
+        for name in param_names:
+            param_tp_map[name] = tps_global
+    else:
+        st.caption("Enter timepoints for each parameter individually.")
+        tp_cols = st.columns(min(n_params, 3))
+        for i, name in enumerate(param_names):
+            with tp_cols[i % len(tp_cols)]:
+                tp_raw = st.text_input(
+                    f"Timepoints for **{name or f'Parameter {i+1}'}**",
+                    value=st.session_state.get(f"me_tp_{i}", "BL, W4, W8, W12"),
+                    key=f"me_tp_{i}",
+                    placeholder="e.g. BL, W4, W8",
+                )
+                param_tp_map[name] = _parse_tp_list(tp_raw)
+
+    # Validate before allowing confirm
+    all_names_filled = all(n for n in param_names)
+    all_tps_filled   = all(len(v) > 0 for v in param_tp_map.values())
+    setup_ready      = all_names_filled and all_tps_filled
+
+    if not all_names_filled:
+        st.warning("Fill in all parameter names before confirming.")
+    if not all_tps_filled:
+        st.warning("Each parameter needs at least one timepoint.")
+
+    confirm_setup = st.button(
+        "✔ Confirm Setup & Build Entry Tables",
+        type="primary",
+        disabled=not setup_ready,
+    )
+
+    if confirm_setup:
+        st.session_state["me_setup_confirmed"] = True
+        st.session_state["me_param_names"]     = param_names
+        st.session_state["me_param_tp_map"]    = param_tp_map
+        st.session_state.pop("me_submitted_df", None)
+
+    if not st.session_state.get("me_setup_confirmed"):
+        st.stop()
+
+    # Recover confirmed structure from session state
+    confirmed_names  = st.session_state["me_param_names"]
+    confirmed_tp_map = st.session_state["me_param_tp_map"]
+
+    # ══════════════════════════════════════════════
+    # PHASE 2 — DATA ENTRY (one form per parameter)
+    # ══════════════════════════════════════════════
+    st.divider()
+    st.subheader("Phase 2 — Enter Statistics")
+    st.caption(
+        "Fill in the statistics for each parameter. "
+        "p-value, % improvement, and % subjects improved are disabled for the baseline row."
+    )
+
+    # First timepoint in each parameter's list is the baseline
+    baseline_map = {name: confirmed_tp_map[name][0] for name in confirmed_names}
+
+    st.divider()
+
+    all_rows: list[dict] = []
+
+    with st.form("me_data_form"):
+        for p_idx, p_name in enumerate(confirmed_names):
+            tps   = confirmed_tp_map[p_name]
+            bl_tp = baseline_map[p_name]
+
+            st.markdown(f"#### {p_name}")
+            hdr = st.columns([1.6, 0.9, 1.6, 1.3, 1.6])
+            for h, lbl in zip(hdr, [
+                "Time Point", "n", "Mean", "p-value", "Mean % Improvement",
+            ]):
+                h.markdown(f"**{lbl}**")
+
             for t_idx, tp in enumerate(tps):
-                row_idx = p * len(tps) + t_idx
-                row     = rows[row_idx]
-                is_bl   = (t_idx == 0)
-                c = st.columns([2, 1.5, 0.8, 1.4, 1.4, 1.2, 1.2, 1.2])
+                is_bl = (tp == bl_tp)
+                c     = st.columns([1.6, 0.9, 1.6, 1.3, 1.6])
 
-                # Parameter name only on first timepoint of each parameter
-                if is_bl:
-                    row["parameter"] = c[0].text_input(
-                        "Parameter", value=row["parameter"],
-                        key=f"mr_param_{p}",
-                        label_visibility="collapsed",
-                        placeholder=f"Parameter {p + 1}")
-                else:
-                    c[0].markdown("")   # blank — param name already entered above
+                c[0].markdown(
+                    f"**{TP_DISPLAY.get(tp, tp)}**" if is_bl
+                    else TP_DISPLAY.get(tp, tp)
+                )
 
-                row["timepoint"] = tp   # fixed, not editable
+                n_raw   = c[1].text_input("n",    value="", key=f"me_{p_idx}_{t_idx}_n",
+                                           label_visibility="collapsed", placeholder="0")
+                mn_raw  = c[2].text_input("Mean", value="", key=f"me_{p_idx}_{t_idx}_mean",
+                                           label_visibility="collapsed", placeholder="0.0000")
+                pv_raw  = c[3].text_input("p",    value="", key=f"me_{p_idx}_{t_idx}_pv",
+                                           label_visibility="collapsed", placeholder="—",
+                                           disabled=is_bl)
+                pct_raw = c[4].text_input("%imp", value="", key=f"me_{p_idx}_{t_idx}_pct",
+                                           label_visibility="collapsed", placeholder="—",
+                                           disabled=is_bl)
 
-                c[1].markdown(f"<small>{tp}</small>", unsafe_allow_html=True)
+                all_rows.append({
+                    "parameter":   p_name,
+                    "timepoint":   tp,
+                    "n":           int(_safe_float(n_raw) or 0),
+                    "mean":        _safe_float(mn_raw) or 0.0,
+                    "p_value":     "" if is_bl else pv_raw.strip(),
+                    "pct_change":  None if is_bl else _safe_float(pct_raw),
+                })
 
-                n_raw        = c[2].text_input("n",
-                                    value=str(row["n"]) if row["n"] else "",
-                                    key=f"mr_n_{row_idx}",
-                                    label_visibility="collapsed",
-                                    placeholder="0")
-                row["n"]     = int(_safe_float(n_raw) or 0)
+            if p_idx < len(confirmed_names) - 1:
+                st.divider()
 
-                mean_raw     = c[3].text_input("Mean",
-                                    value=str(row["mean"]) if row["mean"] not in (None, 0.0) else "",
-                                    key=f"mr_mean_{row_idx}",
-                                    label_visibility="collapsed",
-                                    placeholder="0.0000")
-                row["mean"]  = _safe_float(mean_raw) or 0.0
+        submitted = st.form_submit_button("✔ Submit", type="primary")
 
-                sd_raw       = c[4].text_input("SD ±",
-                                    value=str(row["sd"]) if row["sd"] not in (None, 0.0) else "",
-                                    key=f"mr_sd_{row_idx}",
-                                    label_visibility="collapsed",
-                                    placeholder="N/A")
-                row["sd"]    = _safe_float(sd_raw) if sd_raw.strip().upper() not in ("N/A", "—", "") else None
-
-                # p-value, % improvement, % subjects — blank/disabled for baseline
-                row["p_value"] = c[5].text_input("p-value",
-                                    value="" if is_bl else row["p_value"],
-                                    key=f"mr_pval_{row_idx}",
-                                    label_visibility="collapsed",
-                                    placeholder="—",
-                                    disabled=is_bl)
-
-                pct_raw        = c[6].text_input("Mean % Improvement",
-                                    value="" if is_bl else (str(row["pct_change"]) if row["pct_change"] is not None else ""),
-                                    key=f"mr_pct_{row_idx}",
-                                    label_visibility="collapsed",
-                                    placeholder="—",
-                                    disabled=is_bl)
-                row["pct_change"] = None if is_bl else _safe_float(pct_raw)
-
-                pct_subj_raw   = c[7].text_input("% Subjects Improved",
-                                    value="" if is_bl else (str(row["pct_subjects"]) if row["pct_subjects"] is not None else ""),
-                                    key=f"mr_pctsubj_{row_idx}",
-                                    label_visibility="collapsed",
-                                    placeholder="—",
-                                    disabled=is_bl)
-                row["pct_subjects"] = None if is_bl else _safe_float(pct_subj_raw)
-
-        col_sub   = st.columns([1, 3])[0]
-        submitted = col_sub.form_submit_button("✔ Update", type="primary")
-
-    # Handle submit outside the form block
     if submitted:
-        valid_rows = [r for r in rows
-                      if r["parameter"].strip() and r["timepoint"].strip()
-                      and r["mean"] not in (None, 0.0)]
-        if valid_rows:
-            manual_df = pd.DataFrame(valid_rows)
-            manual_df["timepoint"] = manual_df["timepoint"].apply(_normalise_tp)
-
-    # ── EDITABLE REVIEW TABLE ─────────────────────────────────────
-    if manual_df is not None and not manual_df.empty:
-        st.divider()
-        st.subheader("Review & Edit")
-        st.caption("Edit cells inline before generating charts.")
-
-        # Column order matches: Parameter | Time Point | n | Mean ± SD | p-value |
-        #                       Mean Percent Improvement From Baseline |
-        #                       Percent of Subjects with Improvement
-        display_cols = [c for c in
-                        ["parameter", "timepoint", "n", "mean", "sd",
-                         "p_value", "pct_change", "pct_subjects"]
-                        if c in manual_df.columns]
-        col_cfg = {
-            "parameter":    st.column_config.TextColumn("Parameter"),
-            "timepoint":    st.column_config.TextColumn("Time Point"),
-            "n":            st.column_config.NumberColumn("n", min_value=0, step=1),
-            "mean":         st.column_config.NumberColumn("Mean", format="%.3f"),
-            "sd":           st.column_config.NumberColumn("SD",   format="%.3f"),
-            "p_value":      st.column_config.TextColumn("p-value"),
-            "pct_change":   st.column_config.NumberColumn("Mean % Improvement From Baseline", format="%.2f"),
-            "pct_subjects": st.column_config.NumberColumn("% Subjects with Improvement", format="%.2f"),
-        }
-        manual_df = st.data_editor(
-            manual_df[display_cols],
-            num_rows="dynamic",
-            use_container_width=True,
-            hide_index=True,
-            column_config={k: v for k, v in col_cfg.items() if k in display_cols},
-        )
-
-        detected_tps = list(manual_df["timepoint"].unique())
-        bl_tp_key    = _normalise_tp(baseline_tp)
-        bl_default   = detected_tps.index(bl_tp_key) if bl_tp_key in detected_tps else 0
-        baseline_tp  = st.selectbox(
-            "Baseline timepoint", options=detected_tps, index=bl_default,
-            format_func=lambda t: f"{TP_DISPLAY.get(t, t)} ({t})",
-        )
-
-        ecrf_m, stats_m, dirs_m = _manual_df_to_ecrf_and_stats(
-            manual_df, study_ref, baseline_tp)
-        ecrf_m.n_included = (
-            int(manual_df["n"].max()) if manual_df["n"].notna().any() else 0
-        )
-        keep_m = list(ecrf_m.parameters.keys())
-
-        st.divider()
-        st.subheader("Improvement Direction")
-        dir_mode_m = st.radio(
-            "Direction setting",
-            options=["Auto-detected", "All Lower = Improvement",
-                     "All Higher = Improvement", "Per parameter"],
-            horizontal=True,
-        )
-        if dir_mode_m == "Auto-detected":
-            imp_dirs_m = dirs_m
-        elif dir_mode_m == "All Lower = Improvement":
-            imp_dirs_m = {k: "lower" for k in keep_m}
-        elif dir_mode_m == "All Higher = Improvement":
-            imp_dirs_m = {k: "higher" for k in keep_m}
+        valid = [r for r in all_rows
+                 if r["parameter"].strip() and r["mean"] not in (None, 0.0)]
+        if valid:
+            df_submitted = pd.DataFrame(valid)
+            df_submitted["timepoint"] = df_submitted["timepoint"].apply(_normalise_tp)
+            st.session_state["me_submitted_df"] = df_submitted
         else:
-            imp_dirs_m = {}
-            cols_d = st.columns(3)
-            for i, k in enumerate(keep_m):
-                with cols_d[i % 3]:
-                    ch = st.radio(
-                        f"**{k}**",
-                        ["Lower = Improvement", "Higher = Improvement"],
-                        index=0 if dirs_m.get(k, "lower") == "lower" else 1,
-                        key=f"mdir_{k}",
-                    )
-                    imp_dirs_m[k] = "lower" if "Lower" in ch else "higher"
+            st.warning("No valid rows found — ensure at least one mean value is entered.")
 
-        active_tps_m   = sorted(detected_tps, key=tp_sort_key)
-        chart_titles_m = {k: f"{study_ref} — {k}" for k in keep_m}
+    if "me_submitted_df" not in st.session_state:
+        st.stop()
 
-        st.divider()
-        st.subheader("Preview")
-        preview_m = st.selectbox("Preview parameter", options=keep_m)
-        if preview_m:
-            fig_m = create_parameter_chart(
-                ecrf_m,
-                ecrf_m.parameters[preview_m],
-                stats_m.get(preview_m, {}),
-                imp_dirs_m.get(preview_m, "lower"),
-                active_tps=active_tps_m,
-                custom_title=chart_titles_m.get(preview_m),
-                show_center=show_center,
-            )
-            if fig_m:
-                st.pyplot(fig_m, use_container_width=True)
-                plt.close(fig_m)
+    # ══════════════════════════════════════════════
+    # PHASE 3 — REVIEW & EDIT
+    # ══════════════════════════════════════════════
+    st.divider()
+    st.subheader("Phase 3 — Review & Edit")
+    st.caption("Edit any cell inline. Changes here feed directly into the charts.")
 
-        st.divider()
-        st.subheader("Generate PDF")
-        st.write(f"**{len(keep_m)}** parameter(s) · "
-                 f"**{len(active_tps_m)}** timepoint(s)")
+    manual_df = st.session_state["me_submitted_df"]
 
-        if st.button("📄 Generate PDF", type="primary"):
-            progress_m  = st.progress(0, text="Starting…")
-            pdf_bytes_m = generate_pdf_bytes(
-                ecrf_m, stats_m, imp_dirs_m, chart_titles_m,
-                active_tps=active_tps_m,
-                show_center=show_center,
-                progress_bar=progress_m,
-            )
-            progress_m.empty()
-            st.success(f"✅ PDF generated — {len(keep_m)} chart(s).")
-            st.download_button(
-                label="⬇️ Download PDF",
-                data=pdf_bytes_m,
-                file_name=f"{study_ref.replace(' ', '_')}_manual_charts.pdf",
-                mime="application/pdf",
-            )
-            
+    col_cfg = {
+        "parameter":  st.column_config.TextColumn("Parameter"),
+        "timepoint":  st.column_config.TextColumn("Time Point"),
+        "n":          st.column_config.NumberColumn("n", min_value=0, step=1),
+        "mean":       st.column_config.NumberColumn("Mean", format="%.4f"),
+        "p_value":    st.column_config.TextColumn("p-value"),
+        "pct_change": st.column_config.NumberColumn(
+                          "Mean % Improvement From Baseline", format="%.2f"),
+    }
+    display_cols = [c for c in col_cfg if c in manual_df.columns]
+    manual_df = st.data_editor(
+        manual_df[display_cols],
+        num_rows="dynamic",
+        use_container_width=True,
+        hide_index=True,
+        column_config={k: v for k, v in col_cfg.items() if k in display_cols},
+    )
+
+    detected_tps = list(dict.fromkeys(manual_df["timepoint"].tolist()))
+    bl_tp_key    = _normalise_tp(baseline_map[confirmed_names[0]])
+    bl_default   = detected_tps.index(bl_tp_key) if bl_tp_key in detected_tps else 0
+    review_bl    = st.selectbox(
+        "Baseline timepoint (confirm after editing)",
+        options=detected_tps,
+        index=bl_default,
+        format_func=lambda t: f"{TP_DISPLAY.get(t, t)} ({t})",
+        key="me_review_bl",
+    )
+
+    ecrf_m, stats_m, dirs_m = _manual_df_to_ecrf_and_stats(
+        manual_df, study_ref, review_bl
+    )
+    ecrf_m.n_included = int(manual_df["n"].max()) if manual_df["n"].notna().any() else 0
+    keep_m = list(ecrf_m.parameters.keys())
+
+    # ══════════════════════════════════════════════
+    # PHASE 4 — IMPROVEMENT DIRECTION
+    # ══════════════════════════════════════════════
+    st.divider()
+    st.subheader("Phase 4 — Improvement Direction")
+
+    dir_mode_m = st.radio(
+        "Direction setting",
+        options=["Auto-detected", "All Lower = Improvement",
+                 "All Higher = Improvement", "Per parameter"],
+        horizontal=True,
+        key="me_dir_mode",
+    )
+    if dir_mode_m == "Auto-detected":
+        imp_dirs_m = dirs_m
+    elif dir_mode_m == "All Lower = Improvement":
+        imp_dirs_m = {k: "lower" for k in keep_m}
+    elif dir_mode_m == "All Higher = Improvement":
+        imp_dirs_m = {k: "higher" for k in keep_m}
+    else:
+        imp_dirs_m = {}
+        dcols = st.columns(min(len(keep_m), 3))
+        for i, k in enumerate(keep_m):
+            with dcols[i % len(dcols)]:
+                ch = st.radio(
+                    f"**{k}**",
+                    ["Lower = Improvement", "Higher = Improvement"],
+                    index=0 if dirs_m.get(k, "lower") == "lower" else 1,
+                    key=f"me_dir_{k}",
+                )
+                imp_dirs_m[k] = "lower" if "Lower" in ch else "higher"
+
+    active_tps_m   = sorted(detected_tps, key=tp_sort_key)
+    chart_titles_m = {k: f"{study_ref} — {k}" for k in keep_m}
+
+    # ══════════════════════════════════════════════
+    # PHASE 5 — PREVIEW
+    # ══════════════════════════════════════════════
+    st.divider()
+    st.subheader("Phase 5 — Preview")
+
+    preview_m = st.selectbox("Preview parameter", options=keep_m, key="me_preview")
+    if preview_m and stats_m.get(preview_m):
+        fig_m = create_parameter_chart(
+            ecrf_m,
+            ecrf_m.parameters[preview_m],
+            stats_m.get(preview_m, {}),
+            imp_dirs_m.get(preview_m, "lower"),
+            active_tps=active_tps_m,
+            custom_title=chart_titles_m.get(preview_m),
+            show_center=show_center,
+        )
+        if fig_m:
+            st.pyplot(fig_m, use_container_width=True)
+            plt.close(fig_m)
+    elif preview_m:
+        st.info("No chart data yet — fill in the statistics above and click Submit.")
+
+    # ══════════════════════════════════════════════
+    # PHASE 6 — GENERATE PDF
+    # ══════════════════════════════════════════════
+    st.divider()
+    st.subheader("Phase 6 — Generate PDF")
+    st.write(
+        f"**{len(keep_m)}** parameter(s) · "
+        f"**{len(active_tps_m)}** timepoint(s)"
+    )
+
+    if st.button("📄 Generate PDF", type="primary"):
+        progress_m  = st.progress(0, text="Starting…")
+        pdf_bytes_m = generate_pdf_bytes(
+            ecrf_m, stats_m, imp_dirs_m, chart_titles_m,
+            active_tps=active_tps_m,
+            show_center=show_center,
+            progress_bar=progress_m,
+        )
+        progress_m.empty()
+        st.success(f"✅ PDF generated — {len(keep_m)} chart(s).")
+        st.download_button(
+            label="⬇️ Download PDF",
+            data=pdf_bytes_m,
+            file_name=f"{study_ref.replace(' ', '_')}_manual_charts.pdf",
+            mime="application/pdf",
+        )
+        
 def run_excel_flow():
     # ══════════════════════════════════════════════
     # STEP 1 — Upload
