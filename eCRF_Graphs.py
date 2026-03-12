@@ -1351,10 +1351,9 @@ def generate_pdf_bytes(ecrf, all_param_stats, improvement_dirs, chart_titles,
 
 def _safe_float(s) -> float | None:
     try:
-        return float(s)
+        return float(str(s).strip().rstrip("%"))
     except Exception:
         return None
-
 
 def _normalise_tp(raw: str) -> str:
     """Convert display labels (e.g. 'Week 4') back to canonical keys (e.g. 'W4')."""
@@ -1670,9 +1669,8 @@ def run_manual_entry_flow():
     )
 
     ecrf_m, stats_m, dirs_m = _manual_df_to_ecrf_and_stats(
-        manual_df, study_ref,
-        # pass the most common first-tp as the global baseline
-        review_bl=next(iter(first_tp_per_param.values())) if first_tp_per_param else "BL",
+    manual_df, study_ref,
+    next(iter(first_tp_per_param.values())) if first_tp_per_param else "BL",
     )
     ecrf_m.n_included = int(manual_df["n"].max()) if manual_df["n"].notna().any() else 0
     keep_m = list(ecrf_m.parameters.keys())
