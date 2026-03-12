@@ -1256,8 +1256,9 @@ def create_parameter_chart(ecrf, param, param_stats, improvement_dir,
     ax.set_axisbelow(True)
     ax.yaxis.grid(True, color='#E4E4E4', linewidth=1)
     ax.xaxis.grid(False)
-    ax.yaxis.set_major_locator(plt.MultipleLocator(0.5))
-    ax.yaxis.set_minor_locator(plt.MultipleLocator(0.25))
+    tick_interval = max(0.5, round_half_up((y_max / 10), 0))
+    ax.yaxis.set_major_locator(plt.MultipleLocator(tick_interval))
+    ax.yaxis.set_minor_locator(plt.MultipleLocator(tick_interval / 2))
     ax.tick_params(axis='y', which='major', length=6, width=1.2,
                    color=COLORS['text_main'])
     ax.tick_params(axis='y', which='minor', length=3, width=0.6, color='#999999')
@@ -1725,6 +1726,9 @@ def run_manual_entry_flow():
     if preview_m:
         param_stats_m = stats_m.get(preview_m, {})
         if param_stats_m:
+            st.write("active_tps_m:", active_tps_m)
+            st.write("param_stats keys:", list(param_stats_m.keys()))
+            st.write("ecrf baseline_prefix:", ecrf_m.baseline_prefix)
             fig_m = create_parameter_chart(
                 ecrf_m,
                 ecrf_m.parameters[preview_m],
