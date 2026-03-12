@@ -1,5 +1,5 @@
 """
-eCRF Chart Generator v1.5 — Streamlit Edition
+eCRF Chart Generator v1.6 — Streamlit Edition
 ===============================================
 Usage:
     streamlit run ecrf_chart_generator_streamlit.py
@@ -1483,69 +1483,91 @@ def run_manual_entry_flow():
 
     rows = st.session_state.manual_rows
 
-    hdr = st.columns([2, 1.5, 0.8, 1.4, 1.4, 1.2, 1.2, 1.2, 0.5])
-    for h, lbl in zip(hdr, ["Parameter", "Time Point", "n",
-                              "Mean", "SD ±",
-                              "p-value", "Mean % Improvement",
-                              "% Subjects Improved", ""]):
-        h.markdown(f"**{lbl}**")
+    with st.form("manual_entry_form"):
+        hdr = st.columns([2, 1.5, 0.8, 1.4, 1.4, 1.2, 1.2, 1.2])
+        for h, lbl in zip(hdr, ["Parameter", "Time Point", "n",
+                                  "Mean", "SD ±", "p-value",
+                                  "Mean % Improvement", "% Subjects Improved"]):
+            h.markdown(f"**{lbl}**")
 
-    for i, row in enumerate(rows):
-        c = st.columns([2, 1.5, 0.8, 1.4, 1.4, 1.2, 1.2, 1.2, 0.5])
-        row["parameter"] = c[0].text_input("Parameter", value=row["parameter"],
-                                            key=f"mr_param_{i}",
-                                            label_visibility="collapsed")
-        row["timepoint"] = c[1].text_input("Time Point", value=row["timepoint"],
-                                            key=f"mr_tp_{i}",
-                                            label_visibility="collapsed")
-        row["n"]         = c[2].number_input(
-                                "n", value=int(row["n"]) if row["n"] else 0,
-                                min_value=0, step=1, key=f"mr_n_{i}",
-                                label_visibility="collapsed")
-        row["mean"]      = c[3].number_input(
-                                "Mean", value=float(row["mean"]), format="%.4f",
-                                key=f"mr_mean_{i}", label_visibility="collapsed")
-        row["sd"]        = c[4].number_input(
-                                "SD", value=float(row["sd"]) if row["sd"] else 0.0,
-                                min_value=0.0, format="%.4f", key=f"mr_sd_{i}",
-                                label_visibility="collapsed")
-        # p-value, pct_change, pct_subjects — blank for baseline rows
-        row["p_value"]    = c[5].text_input("p-value", value=row["p_value"],
-                                              key=f"mr_pval_{i}",
-                                              label_visibility="collapsed",
-                                              placeholder="—")
-        pct_raw           = c[6].text_input(
-                                "Mean % Improvement",
-                                value=str(row["pct_change"])
-                                if row["pct_change"] is not None else "",
-                                key=f"mr_pct_{i}", label_visibility="collapsed",
-                                placeholder="—")
-        row["pct_change"] = _safe_float(pct_raw)
-        pct_subj_raw      = c[7].text_input(
-                                "% Subjects Improved",
-                                value=str(row["pct_subjects"])
-                                if row["pct_subjects"] is not None else "",
-                                key=f"mr_pctsubj_{i}", label_visibility="collapsed",
-                                placeholder="—")
-        row["pct_subjects"] = _safe_float(pct_subj_raw)
-        if c[8].button("✕", key=f"mr_del_{i}") and len(rows) > 1:
-            rows.pop(i)
-            st.rerun()
+        for p in range(n_params):
+            st.markdown(f"---")
+            for t_idx, tp in enumerate(tps):
+                row_idx = p * len(tps) + t_idx
+                row     = rows[row_idx]
+                is_bl   = (t_idx == 0)
+                c = st.columns([2, 1.5, 0.8, 1.4, 1.4, 1.2, 1.2, 1.2])
 
-    col_add1, _ = st.columns([1, 5])
-    if col_add1.button("＋ Add row"):
-        last_param = rows[-1]["parameter"] if rows else ""
-        rows.append({"parameter": last_param, "timepoint": "",
-                     "n": 0, "mean": 0.0, "sd": 0.0,
-                     "p_value": "", "pct_change": None, "pct_subjects": None})
-        st.rerun()
+                # Parameter name only on first timepoint of each parameter
+                if is_bl:
+                    row["parameter"] = c[0].text_input(
+                        "Parameter", value=row["parameter"],
+                        key=f"mr_param_{p}",
+                        label_visibility="collapsed",
+                        placeholder=f"Parameter {p + 1}")
+                else:
+                    c[0].markdown("")   # blank — param name already entered above
 
-    valid_rows = [r for r in rows
-                  if r["parameter"].strip() and r["timepoint"].strip()
-                  and r["mean"] != 0.0]
-    if valid_rows:
-        manual_df = pd.DataFrame(valid_rows)
-        manual_df["timepoint"] = manual_df["timepoint"].apply(_normalise_tp)
+                row["timepoint"] = tp   # fixed, not editable
+
+                c[1].markdown(f"<small>{tp}</small>", unsafe_allow_html=True)
+
+                n_raw        = c[2].text_input("n",
+                                    value=str(row["n"]) if row["n"] else "",
+                                    key=f"mr_n_{row_idx}",
+                                    label_visibility="collapsed",
+                                    placeholder="0")
+                row["n"]     = int(_safe_float(n_raw) or 0)
+
+                mean_raw     = c[3].text_input("Mean",
+                                    value=str(row["mean"]) if row["mean"] not in (None, 0.0) else "",
+                                    key=f"mr_mean_{row_idx}",
+                                    label_visibility="collapsed",
+                                    placeholder="0.0000")
+                row["mean"]  = _safe_float(mean_raw) or 0.0
+
+                sd_raw       = c[4].text_input("SD ±",
+                                    value=str(row["sd"]) if row["sd"] not in (None, 0.0) else "",
+                                    key=f"mr_sd_{row_idx}",
+                                    label_visibility="collapsed",
+                                    placeholder="N/A")
+                row["sd"]    = _safe_float(sd_raw) if sd_raw.strip().upper() not in ("N/A", "—", "") else None
+
+                # p-value, % improvement, % subjects — blank/disabled for baseline
+                row["p_value"] = c[5].text_input("p-value",
+                                    value="" if is_bl else row["p_value"],
+                                    key=f"mr_pval_{row_idx}",
+                                    label_visibility="collapsed",
+                                    placeholder="—",
+                                    disabled=is_bl)
+
+                pct_raw        = c[6].text_input("Mean % Improvement",
+                                    value="" if is_bl else (str(row["pct_change"]) if row["pct_change"] is not None else ""),
+                                    key=f"mr_pct_{row_idx}",
+                                    label_visibility="collapsed",
+                                    placeholder="—",
+                                    disabled=is_bl)
+                row["pct_change"] = None if is_bl else _safe_float(pct_raw)
+
+                pct_subj_raw   = c[7].text_input("% Subjects Improved",
+                                    value="" if is_bl else (str(row["pct_subjects"]) if row["pct_subjects"] is not None else ""),
+                                    key=f"mr_pctsubj_{row_idx}",
+                                    label_visibility="collapsed",
+                                    placeholder="—",
+                                    disabled=is_bl)
+                row["pct_subjects"] = None if is_bl else _safe_float(pct_subj_raw)
+
+        col_sub = st.columns([1, 3])[0]
+        submitted = col_sub.form_submit_button("✔ Update", type="primary")
+
+    # Handle submit outside the form block
+    if submitted:
+        valid_rows = [r for r in rows
+                      if r["parameter"].strip() and r["timepoint"].strip()
+                      and r["mean"] not in (None, 0.0)]
+        if valid_rows:
+            manual_df = pd.DataFrame(valid_rows)
+            manual_df["timepoint"] = manual_df["timepoint"].apply(_normalise_tp)
 
     # ── EDITABLE REVIEW TABLE ─────────────────────────────────────
     if manual_df is not None and not manual_df.empty:
@@ -1579,7 +1601,8 @@ def run_manual_entry_flow():
         )
 
         detected_tps = list(manual_df["timepoint"].unique())
-        bl_default   = detected_tps.index("BL") if "BL" in detected_tps else 0
+        bl_tp_key    = _normalise_tp(baseline_tp)
+        bl_default   = detected_tps.index(bl_tp_key) if bl_tp_key in detected_tps else 0
         baseline_tp  = st.selectbox(
             "Baseline timepoint", options=detected_tps, index=bl_default,
             format_func=lambda t: f"{TP_DISPLAY.get(t, t)} ({t})",
