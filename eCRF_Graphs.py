@@ -1149,13 +1149,46 @@ def summarise_data_quality(issues: dict) -> dict:
 def draw_solid_bar(ax, x, y, width, height, color):
     from matplotlib.path import Path as MplPath
     from matplotlib.patches import PathPatch
-    r     = min(width * 0.2, height * 0.015)
-    verts = [(x, y), (x, y+height-r), (x, y+height), (x+r, y+height),
-             (x+width-r, y+height), (x+width, y+height),
-             (x+width, y+height-r), (x+width, y), (x, y)]
-    codes = [MplPath.MOVETO, MplPath.LINETO, MplPath.CURVE3, MplPath.CURVE3,
-             MplPath.LINETO, MplPath.CURVE3, MplPath.CURVE3,
-             MplPath.LINETO, MplPath.CLOSEPOLY]
+
+    # Convert a fixed pixel radius into data units so rounding is
+    # always visible regardless of axis scale or bar height.
+    fig = ax.get_figure()
+    fig.canvas.draw()  # ensure transforms are up to date
+
+    # 12 display points → data-unit radius in x and y independently
+    disp_r = 12.0
+    inv    = ax.transData.inverted()
+    origin = inv.transform(ax.transData.transform((x, y)))
+    corner = inv.transform(ax.transData.transform((x, y)) + np.array([disp_r, disp_r]))
+    rx = abs(corner[0] - origin[0])   # x radius in data units
+    ry = abs(corner[1] - origin[1])   # y radius in data units
+
+    # Cap ry so the curve never exceeds the bar height
+    ry = min(ry, height * 0.4)
+    rx = min(rx, width  * 0.4)
+
+    verts = [
+        (x,             y),              # 1  MOVETO       bottom-left
+        (x,             y + height - ry),# 2  LINETO       left side up
+        (x,             y + height),     # 3  CURVE3 ctrl  top-left
+        (x + rx,        y + height),     # 4  CURVE3 end   top-left
+        (x + width - rx,y + height),     # 5  LINETO       top across
+        (x + width,     y + height),     # 6  CURVE3 ctrl  top-right
+        (x + width,     y + height - ry),# 7  CURVE3 end   top-right
+        (x + width,     y),              # 8  LINETO       right side down
+        (x,             y),              # 9  CLOSEPOLY
+    ]
+    codes = [
+        MplPath.MOVETO,    # 1
+        MplPath.LINETO,    # 2
+        MplPath.CURVE3,    # 3
+        MplPath.CURVE3,    # 4
+        MplPath.LINETO,    # 5
+        MplPath.CURVE3,    # 6
+        MplPath.CURVE3,    # 7
+        MplPath.LINETO,    # 8
+        MplPath.CLOSEPOLY, # 9
+    ]
     ax.add_patch(PathPatch(MplPath(verts, codes), fc=color, ec="none", zorder=3))
 
 
@@ -1387,7 +1420,7 @@ def generate_pdf_bytes(ecrf, all_param_stats, improvement_dirs, chart_titles,
 
 
 # ═══════════════════════════════════════════════════════════════
-# MANUAL ENTRY HELPERS
+# MANUAL ENTRY HELPERS 
 # ═══════════════════════════════════════════════════════════════
 
 def _safe_float(s) -> float | None:
@@ -1397,7 +1430,6 @@ def _safe_float(s) -> float | None:
         return None
 
 def _normalise_tp(raw: str) -> str:
-    """Convert display labels (e.g. 'Week 4') back to canonical keys (e.g. 'W4')."""
     raw   = raw.strip()
     upper = raw.upper()
     if upper in KNOWN_TP_ORDER:
@@ -1409,31 +1441,9 @@ def _normalise_tp(raw: str) -> str:
 
 
 def _parse_tp_list(raw: str) -> list[str]:
-    """Split, normalise, and deduplicate a comma-separated timepoint string."""
     return list(dict.fromkeys(
         _normalise_tp(t) for t in raw.split(",") if t.strip()
     ))
-
-
-def _split_mean_sd(cell: str) -> tuple[float | None, float | None]:
-    cell = cell.strip()
-    if not cell or cell.upper() in ("", "N/A", "—", "ND"):
-        return None, None
-    for sep in ("±", "+-", "+/-", "±"):
-        if sep in cell:
-            parts = cell.split(sep, 1)
-            mean  = _safe_float(parts[0].strip())
-            sd_s  = parts[1].strip()
-            sd    = None if sd_s.upper() in ("N/A", "—", "ND", "") \
-                    else _safe_float(sd_s)
-            return mean, sd
-    return _safe_float(cell), None
-
-
-def _parse_pct(s: str) -> float | None:
-    if not s:
-        return None
-    return _safe_float(s.strip().rstrip("%"))
 
 
 def _manual_df_to_ecrf_and_stats(
@@ -1466,39 +1476,36 @@ def _manual_df_to_ecrf_and_stats(
         for _, row in grp.iterrows():
             tp       = row["timepoint"]
             mean_val = row["mean"]
-            sd_val   = 0.0
             n_val    = int(row["n"]) if pd.notna(row["n"]) else 0
-            pct      = row["pct_change"] if pd.notna(row["pct_change"]) else None
+            is_bl    = (tp == baseline_tp)
 
-            if tp == baseline_tp:
+            if is_bl:
                 bl_mean = mean_val
-                pct     = None
 
-            p_raw = str(row.get("p_value", "")).strip()
-            sig   = "*" in p_raw or (
-                p_raw not in ("", "—", "N/A")
-                and _safe_float(p_raw) is not None
-                and _safe_float(p_raw) < 0.05
-            )
+            # significant flag comes straight from the checkbox column
+            sig = bool(row.get("significant", False)) if not is_bl else False
 
             stat_dict[tp] = {
                 "mean":        mean_val,
-                "std":         sd_val,
+                "std":         0.0,
                 "n":           n_val,
-                "pct_change":  pct,
+                "pct_change":  None,          # calculated below
                 "values":      np.array([mean_val]),
                 "significant": sig,
             }
             pi.tp_columns[tp] = f"__manual__{tp}"
 
+        # back-calculate % change from means
         if bl_mean is not None and bl_mean != 0:
             for tp, s in stat_dict.items():
-                if tp != baseline_tp and s["pct_change"] is None:
+                if tp != baseline_tp:
                     s["pct_change"] = ((s["mean"] - bl_mean) / bl_mean) * 100
 
         non_bl = [(tp, s) for tp, s in stat_dict.items() if tp != baseline_tp]
         if non_bl and bl_mean is not None:
-            auto_dirs[param_name] = "lower" if non_bl[-1][1]["mean"] <= bl_mean else "higher"
+            auto_dirs[param_name] = (
+                "lower" if non_bl[-1][1]["mean"] <= bl_mean else "higher"
+            )
         else:
             auto_dirs[param_name] = "lower"
 
@@ -1508,6 +1515,10 @@ def _manual_df_to_ecrf_and_stats(
     return ecrf, all_param_stats, auto_dirs
 
 
+# ═══════════════════════════════════════════════════════════════
+# run_manual_entry_flow  (full replacement)
+# ═══════════════════════════════════════════════════════════════
+
 def run_manual_entry_flow():
     st.header("Manual Entry")
     st.caption(
@@ -1515,10 +1526,13 @@ def run_manual_entry_flow():
     )
 
     col_a, col_b, col_c = st.columns(3)
-    study_num    = col_a.text_input("Study Number", placeholder="e.g. CS251037")
-    analysis_lbl = col_b.text_input("Analysis Type", placeholder="e.g. Photography Analysis, Expert Grading")
+    study_num    = col_a.text_input("Study Number",    placeholder="e.g. CS251037")
+    analysis_lbl = col_b.text_input("Analysis Type",   placeholder="e.g. Expert Grading")
     show_center  = col_c.checkbox("Show center on charts", value=False)
-    study_ref    = f"{study_num}: {analysis_lbl}".strip(": ") if study_num or analysis_lbl else ""
+    study_ref    = (
+        f"{study_num}: {analysis_lbl}".strip(": ")
+        if study_num or analysis_lbl else ""
+    )
 
     # ══════════════════════════════════════════════
     # PHASE 1 — STRUCTURE SETUP
@@ -1526,11 +1540,10 @@ def run_manual_entry_flow():
     st.divider()
     st.subheader("Phase 1 — Define Parameters & Timepoints")
 
-    n_params = st.number_input(
+    n_params = int(st.number_input(
         "How many parameters?", min_value=1, max_value=30, value=1, step=1,
         key="me_n_params",
-    )
-    n_params = int(n_params)
+    ))
 
     param_names = []
     pcols = st.columns(min(n_params, 4))
@@ -1601,18 +1614,17 @@ def run_manual_entry_flow():
     confirmed_tp_map = st.session_state["me_param_tp_map"]
 
     # ══════════════════════════════════════════════
-    # PHASE 2 — DATA ENTRY
+    # PHASE 2 — DATA ENTRY  (n, Mean, Significant?)
     # ══════════════════════════════════════════════
     st.divider()
     st.subheader("Phase 2 — Enter Statistics")
     st.caption(
-        "Fill in the statistics for each parameter. "
-        "p-value and % improvement are disabled for the baseline row."
+        "Enter **n** and **Mean** for each timepoint. "
+        "For non-baseline rows, select whether the result is statistically significant "
+        "(p < 0.05). % change from baseline is calculated automatically."
     )
 
     baseline_map = {name: confirmed_tp_map[name][0] for name in confirmed_names}
-
-    st.divider()
 
     all_rows: list[dict] = []
 
@@ -1622,39 +1634,51 @@ def run_manual_entry_flow():
             bl_tp = baseline_map[p_name]
 
             st.markdown(f"#### {p_name}")
-            hdr = st.columns([1.6, 0.9, 1.6, 1.3, 1.6])
-            for h, lbl in zip(hdr, [
-                "Time Point", "n", "Mean", "p-value", "Mean % Improvement",
-            ]):
+
+            # header row
+            hdr = st.columns([1.6, 0.9, 1.8, 1.6])
+            for h, lbl in zip(hdr, ["Time Point", "n", "Mean", "Significant?"]):
                 h.markdown(f"**{lbl}**")
 
             for t_idx, tp in enumerate(tps):
                 is_bl = (tp == bl_tp)
-                c     = st.columns([1.6, 0.9, 1.6, 1.3, 1.6])
+                c     = st.columns([1.6, 0.9, 1.8, 1.6])
 
+                # timepoint label
                 c[0].markdown(
-                    f"**{TP_DISPLAY.get(tp, tp)}**" if is_bl
-                    else TP_DISPLAY.get(tp, tp)
+                    f"**{TP_DISPLAY.get(tp, tp)}** *(baseline)*"
+                    if is_bl else TP_DISPLAY.get(tp, tp)
                 )
 
-                n_raw   = c[1].text_input("n",    value="", key=f"me_{p_idx}_{t_idx}_n",
-                                           label_visibility="collapsed", placeholder="0")
-                mn_raw  = c[2].text_input("Mean", value="", key=f"me_{p_idx}_{t_idx}_mean",
-                                           label_visibility="collapsed", placeholder="0.0000")
-                pv_raw  = c[3].text_input("p",    value="", key=f"me_{p_idx}_{t_idx}_pv",
-                                           label_visibility="collapsed", placeholder="—",
-                                           disabled=is_bl)
-                pct_raw = c[4].text_input("%imp", value="", key=f"me_{p_idx}_{t_idx}_pct",
-                                           label_visibility="collapsed", placeholder="—",
-                                           disabled=is_bl)
+                n_raw  = c[1].text_input(
+                    "n", value="", key=f"me_{p_idx}_{t_idx}_n",
+                    label_visibility="collapsed", placeholder="0",
+                )
+                mn_raw = c[2].text_input(
+                    "Mean", value="", key=f"me_{p_idx}_{t_idx}_mean",
+                    label_visibility="collapsed", placeholder="0.0000",
+                )
+
+                if is_bl:
+                    # baseline — significance not applicable
+                    c[3].markdown("*n/a — baseline*")
+                    sig_val = False
+                else:
+                    sig_choice = c[3].selectbox(
+                        "sig",
+                        options=["Not significant", "Significant (p < 0.05)"],
+                        index=0,
+                        key=f"me_{p_idx}_{t_idx}_sig",
+                        label_visibility="collapsed",
+                    )
+                    sig_val = (sig_choice == "Significant (p < 0.05)")
 
                 all_rows.append({
-                    "parameter":  p_name,
-                    "timepoint":  tp,
-                    "n":          int(_safe_float(n_raw) or 0),
-                    "mean":       _safe_float(mn_raw) or 0.0,
-                    "p_value":    "" if is_bl else pv_raw.strip(),
-                    "pct_change": None if is_bl else _safe_float(pct_raw),
+                    "parameter":   p_name,
+                    "timepoint":   tp,
+                    "n":           int(_safe_float(n_raw) or 0),
+                    "mean":        _safe_float(mn_raw) or 0.0,
+                    "significant": sig_val,
                 })
 
             if p_idx < len(confirmed_names) - 1:
@@ -1681,13 +1705,15 @@ def run_manual_entry_flow():
         .first()
         .to_dict()
     )
+    baseline_tp_global = (
+        next(iter(first_tp_per_param.values())) if first_tp_per_param else "BL"
+    )
 
     ecrf_m, stats_m, dirs_m = _manual_df_to_ecrf_and_stats(
-        manual_df, study_ref,
-        next(iter(first_tp_per_param.values())) if first_tp_per_param else "BL",
+        manual_df, study_ref, baseline_tp_global,
     )
     ecrf_m.n_included = int(manual_df["n"].max()) if manual_df["n"].notna().any() else 0
-    keep_m = list(ecrf_m.parameters.keys())
+    keep_m            = list(ecrf_m.parameters.keys())
 
     active_tps_m = sorted(
         set(tp for s in stats_m.values() for tp in s.keys()),
@@ -1695,20 +1721,68 @@ def run_manual_entry_flow():
     )
 
     # ══════════════════════════════════════════════
-    # PHASE 3 — IMPROVEMENT DIRECTION
+    # PHASE 3 — CONFIRM % CHANGE + DIRECTION
     # ══════════════════════════════════════════════
     st.divider()
-    st.subheader("Phase 3 — Improvement Direction")
+    st.subheader("Phase 3 — Confirm % Change & Improvement Direction")
+    st.caption(
+        "% change from baseline is calculated from your entered means. "
+        "Review the table below — if a value looks wrong, go back and correct "
+        "the mean in Phase 2. Then set the improvement direction."
+    )
 
+    # Build a confirmation preview table
+    preview_rows = []
+    for p_name in keep_m:
+        s_dict  = stats_m[p_name]
+        bl_mean = s_dict.get(baseline_tp_global, {}).get("mean")
+        for tp in active_tps_m:
+            if tp not in s_dict:
+                continue
+            s        = s_dict[tp]
+            is_bl    = (tp == baseline_tp_global)
+            pct      = s.get("pct_change")
+            pct_str  = "—" if is_bl or pct is None else f"{pct:+.2f}%"
+            sig_str  = "—" if is_bl else ("✱ Yes" if s["significant"] else "No")
+            preview_rows.append({
+                "Parameter":           p_name,
+                "Timepoint":           TP_DISPLAY.get(tp, tp),
+                "n":                   s["n"],
+                "Mean":                f"{s['mean']:.4f}",
+                "% Change from BL":    pct_str,
+                "Significant?":        sig_str,
+            })
+
+    if preview_rows:
+        st.dataframe(
+            pd.DataFrame(preview_rows),
+            hide_index=True,
+            use_container_width=True,
+            height=min(500, 38 + 35 * len(preview_rows)),
+        )
+
+    st.markdown("**Improvement direction**")
     dir_mode_m = st.radio(
         "Direction setting",
-        options=["Auto-detected", "Decrease = Improvement",
-                 "Increase = Improvement", "Per parameter"],
+        options=[
+            "Auto-detected",
+            "Decrease = Improvement",
+            "Increase = Improvement",
+            "Per parameter",
+        ],
         horizontal=True,
         key="me_dir_mode",
     )
+
     if dir_mode_m == "Auto-detected":
         imp_dirs_m = dirs_m
+        st.caption(
+            "Auto-detected: "
+            + ", ".join(
+                f"**{k}** → {'↓' if v == 'lower' else '↑'}"
+                for k, v in dirs_m.items()
+            )
+        )
     elif dir_mode_m == "Decrease = Improvement":
         imp_dirs_m = {k: "lower" for k in keep_m}
     elif dir_mode_m == "Increase = Improvement":
@@ -1756,7 +1830,7 @@ def run_manual_entry_flow():
                     "Check that at least one non-baseline timepoint has a mean value."
                 )
         else:
-            st.info("No stats found for this parameter — check the data entered in Phase 2.")
+            st.info("No stats found for this parameter.")
 
     # ══════════════════════════════════════════════
     # PHASE 5 — GENERATE PDF
