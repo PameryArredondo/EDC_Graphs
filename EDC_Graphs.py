@@ -3016,6 +3016,8 @@ def run_excel_flow(file_bytes: bytes = None, file_name: str = None):
                              else "Increase = Improvement",
         }
         for tp in all_tps_for_param:
+            if tp not in active_tps:
+                continue
             tp_mean = s.get(tp, {}).get('mean')
             row[f"{TP_DISPLAY.get(tp, tp)} Mean"] = f"{tp_mean:.2f}" if tp_mean is not None else "—"
         if any_rep_params:
