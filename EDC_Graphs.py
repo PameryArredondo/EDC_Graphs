@@ -3290,11 +3290,11 @@ def main():
 
     # ── Upload & auto-detect ─────────────────────────────────────────────────
     uploaded = st.file_uploader(
-        "Upload workbook — eCRF (.xlsx/.xls) or Monaderm RAW DATA (.xlsx/.xls/.xlsm)",
+        "Upload a DataCapt export — export_ecrf or export_data_analysis (.xlsx / .xls / .xlsm)",
         type=["xlsx", "xls", "xlsm"],
         key="main_uploader",
     )
-
+    
     if uploaded is None:
         st.info("Upload a file to begin. The format will be detected automatically.")
         st.stop()
