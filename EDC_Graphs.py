@@ -3167,35 +3167,41 @@ def run_excel_flow(file_bytes: bytes = None, file_name: str = None):
             keep, active_tps, analysis_mode)
 
         if not stats_df.empty:
-            # Drop columns not needed in display or export
+            # Drop any legacy columns not needed
             for drop_col in ("Mean ± SD", "% Subjects Improved"):
                 if drop_col in stats_df.columns:
                     stats_df = stats_df.drop(columns=[drop_col])
-            # Build display df with shaded header rows per parameter group
-            all_cols = list(stats_df.columns)
-            header_rows = []
-            data_rows   = []
-            style_map   = {}   # row_idx -> style string
 
+            all_cols = list(stats_df.columns)
+            style_map: dict[int, str] = {}
+            display_rows: list[dict]  = []
             row_idx = 0
-            for param_name, grp in stats_df.groupby("Assessment", sort=False):
-                # Header row — param name spans, all other cells blank
+
+            # Walk params in original order
+            seen_params: list[str] = []
+            for v in stats_df["Assessment"]:
+                if v not in seen_params:
+                    seen_params.append(v)
+
+            for param_name in seen_params:
+                grp = stats_df[stats_df["Assessment"] == param_name]
+
+                # Shaded header row
                 header = {c: "" for c in all_cols}
                 header["Assessment"] = f"▸  {param_name}"
-                header_rows.append((row_idx, header))
+                display_rows.append(header)
                 style_map[row_idx] = "header"
                 row_idx += 1
+
                 for _, r in grp.iterrows():
                     data_row = r.to_dict()
-                    data_row["Assessment"] = ""   # blank — shown in header
-                    data_rows.append((row_idx, data_row))
+                    data_row["Assessment"] = ""
+                    display_rows.append(data_row)
                     if isinstance(r.get("p-value"), str) and "*" in r["p-value"]:
                         style_map[row_idx] = "sig"
                     row_idx += 1
 
-            # Reconstruct in order
-            ordered = sorted(header_rows + data_rows, key=lambda x: x[0])
-            display_df = pd.DataFrame([r for _, r in ordered], columns=all_cols)
+            display_df = pd.DataFrame(display_rows, columns=all_cols)
 
             def style_grouped(row):
                 idx = row.name
@@ -3210,19 +3216,16 @@ def run_excel_flow(file_bytes: bytes = None, file_name: str = None):
                     return styles
                 return [""] * len(row)
 
+            col_cfg = {c: st.column_config.TextColumn(width="small") for c in all_cols}
+            col_cfg["Assessment"] = st.column_config.TextColumn(width="medium")
+            col_cfg["Time Point"] = st.column_config.TextColumn(width="small")
+
             st.dataframe(
                 display_df.style.apply(style_grouped, axis=1),
                 hide_index=True,
                 use_container_width=True,
                 height=min(700, 38 + 35 * len(display_df)),
-                column_config={
-                    "Assessment":                  st.column_config.TextColumn(width="medium"),
-                    "Time Point":                  st.column_config.TextColumn(width="small"),
-                    "n":                           st.column_config.TextColumn(width="small"),
-                    "Mean":                        st.column_config.TextColumn(width="small"),
-                    "p-value":                     st.column_config.TextColumn(width="small"),
-                    "Mean % Change From Baseline": st.column_config.TextColumn(width="small"),
-                },
+                column_config=col_cfg,
             )
 
             if is_expert:
