@@ -2087,6 +2087,10 @@ def run_manual_entry_flow():
 # MONADERM STREAMLIT FLOW
 # ═══════════════════════════════════════════════════════════════
 
+# ═══════════════════════════════════════════════════════════════
+# MONADERM STREAMLIT FLOW
+# ═══════════════════════════════════════════════════════════════
+
 def run_monaderm_flow(file_bytes: bytes, file_name: str):
     # ── Persistent state keys ────────────────────────────────────────────────
     for k in ("mn_file_name", "mn_scan", "mn_rep_df",
@@ -2209,87 +2213,94 @@ def run_monaderm_flow(file_bytes: bytes, file_name: str):
     # STEP 2 — Rep selection (per subject × zone × TP × parameter)
     # ════════════════════════════════════════════════════════════
     st.divider()
-    st.header("Step 2 — Select Repetitions to Include")
-    st.caption(
-        "Uncheck any rep to exclude it from the average for that "
-        "specific subject × zone × timepoint × parameter combination."
-    )
 
     all_params_loaded = sorted(rep_df["PARAMETER"].unique().tolist())
     all_tps_loaded    = sorted(rep_df["KINETIC"].unique().tolist(), key=tp_sort_key)
 
-    sel_param_view = st.selectbox(
-        "Parameter to review", all_params_loaded, key="mn_param_view"
+    n_excluded = sum(
+        1 for v in (st.session_state["mn_included_reps"] or {}).values()
+        if isinstance(v, set) and len(v) == 0
     )
-    sel_tp_view = st.selectbox(
-        "Timepoint to review",
-        all_tps_loaded,
-        format_func=lambda t: f"{TP_DISPLAY.get(t, t)} ({t})",
-        key="mn_tp_view",
-    )
+    rep_badge = f" — {n_excluded} rep(s) excluded" if n_excluded else ""
 
-    view_df = rep_df[
-        (rep_df["PARAMETER"] == sel_param_view) &
-        (rep_df["KINETIC"]   == sel_tp_view)
-    ].sort_values(["SUBJECT", "ZONE", "REPETITION"])
+    with st.expander(f"Step 2 — Review Repetitions{rep_badge}", expanded=False):
+        st.caption(
+            "Uncheck any rep to exclude it from the average for that "
+            "specific subject × zone × timepoint × parameter combination."
+        )
 
-    if view_df.empty:
-        st.info("No data for this parameter × timepoint combination.")
-    else:
-        included_reps: dict = st.session_state["mn_included_reps"] or {}
+        sel_param_view = st.selectbox(
+            "Parameter to review", all_params_loaded, key="mn_param_view"
+        )
+        sel_tp_view = st.selectbox(
+            "Timepoint to review",
+            all_tps_loaded,
+            format_func=lambda t: f"{TP_DISPLAY.get(t, t)} ({t})",
+            key="mn_tp_view",
+        )
 
-        subjects_in_view = sorted(view_df["SUBJECT"].unique())
-        zones_in_view    = sorted(view_df["ZONE"].unique())
+        view_df = rep_df[
+            (rep_df["PARAMETER"] == sel_param_view) &
+            (rep_df["KINETIC"]   == sel_tp_view)
+        ].sort_values(["SUBJECT", "ZONE", "REPETITION"])
 
-        changed = False
-        for zone in zones_in_view:
-            if len(zones_in_view) > 1:
-                st.markdown(f"**Zone: {zone}**")
-            cols_header = st.columns([1.5] + [1] * 6)
-            cols_header[0].markdown("**Subject**")
-            max_rep = int(view_df[view_df["ZONE"] == zone]["REPETITION"].max())
-            for r in range(1, max_rep + 1):
-                cols_header[r].markdown(f"**Rep {r}**")
+        if view_df.empty:
+            st.info("No data for this parameter × timepoint combination.")
+        else:
+            included_reps: dict = st.session_state["mn_included_reps"] or {}
 
-            for subj in subjects_in_view:
-                subj_rows = view_df[
-                    (view_df["SUBJECT"] == subj) & (view_df["ZONE"] == zone)
-                ]
-                if subj_rows.empty:
-                    continue
+            subjects_in_view = sorted(view_df["SUBJECT"].unique())
+            zones_in_view    = sorted(view_df["ZONE"].unique())
 
-                key4 = (subj, zone, sel_tp_view, sel_param_view)
-                all_reps_for_key = sorted(subj_rows["REPETITION"].tolist())
-                current_set = included_reps.get(key4, set(all_reps_for_key))
+            changed = False
+            for zone in zones_in_view:
+                if len(zones_in_view) > 1:
+                    st.markdown(f"**Zone: {zone}**")
+                cols_header = st.columns([1.5] + [1] * 6)
+                cols_header[0].markdown("**Subject**")
+                max_rep = int(view_df[view_df["ZONE"] == zone]["REPETITION"].max())
+                for r in range(1, max_rep + 1):
+                    cols_header[r].markdown(f"**Rep {r}**")
 
-                cols_row = st.columns([1.5] + [1] * 6)
-                cols_row[0].write(subj)
+                for subj in subjects_in_view:
+                    subj_rows = view_df[
+                        (view_df["SUBJECT"] == subj) & (view_df["ZONE"] == zone)
+                    ]
+                    if subj_rows.empty:
+                        continue
 
-                new_set = set()
-                for r in all_reps_for_key:
-                    val_rows = subj_rows[subj_rows["REPETITION"] == r]["VALUE"]
-                    val_str  = f"{val_rows.values[0]:.4f}" if len(val_rows) else "—"
-                    checked  = r in current_set
-                    col_idx  = r
-                    if col_idx <= 5:
-                        new_checked = cols_row[col_idx].checkbox(
-                            val_str,
-                            value=checked,
-                            key=f"mn_rep_{subj}_{zone}_{sel_tp_view}_{sel_param_view}_{r}",
-                        )
-                        if new_checked:
-                            new_set.add(r)
-                        if new_checked != checked:
-                            changed = True
+                    key4 = (subj, zone, sel_tp_view, sel_param_view)
+                    all_reps_for_key = sorted(subj_rows["REPETITION"].tolist())
+                    current_set = included_reps.get(key4, set(all_reps_for_key))
 
-                if new_set != current_set:
-                    included_reps[key4] = new_set
-                    changed = True
+                    cols_row = st.columns([1.5] + [1] * 6)
+                    cols_row[0].write(subj)
 
-        if changed:
-            st.session_state["mn_included_reps"] = included_reps
-            for k in ("mn_stats_df", "mn_stats_edited", "mn_ecrf"):
-                st.session_state[k] = None
+                    new_set = set()
+                    for r in all_reps_for_key:
+                        val_rows = subj_rows[subj_rows["REPETITION"] == r]["VALUE"]
+                        val_str  = f"{val_rows.values[0]:.4f}" if len(val_rows) else "—"
+                        checked  = r in current_set
+                        col_idx  = r
+                        if col_idx <= 5:
+                            new_checked = cols_row[col_idx].checkbox(
+                                val_str,
+                                value=checked,
+                                key=f"mn_rep_{subj}_{zone}_{sel_tp_view}_{sel_param_view}_{r}",
+                            )
+                            if new_checked:
+                                new_set.add(r)
+                            if new_checked != checked:
+                                changed = True
+
+                    if new_set != current_set:
+                        included_reps[key4] = new_set
+                        changed = True
+
+            if changed:
+                st.session_state["mn_included_reps"] = included_reps
+                for k in ("mn_stats_df", "mn_stats_edited", "mn_ecrf"):
+                    st.session_state[k] = None
 
     # ── Subject completeness summary ─────────────────────────────────────────
     if "mn_dropped_subjects" not in st.session_state:
@@ -2589,7 +2600,7 @@ def run_monaderm_flow(file_bytes: bytes, file_name: str):
             key="mn_pdf_dl",
         )
 
-      
+    
 def run_excel_flow(file_bytes: bytes = None, file_name: str = None):
     st.header("Step 1 — Configure")
 
