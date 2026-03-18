@@ -2,7 +2,7 @@
 EDC Graphs Generator v 2.0 — Streamlit Edition
 ===============================================
 Usage:
-    streamlit run EDC_Graphs_streamlit.py
+    streamlit run EDC_Graphs.py
 """
 
 import io
