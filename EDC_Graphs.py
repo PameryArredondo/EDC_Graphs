@@ -2965,7 +2965,7 @@ def run_excel_flow(file_bytes: bytes = None, file_name: str = None):
             key=tp_sort_key,
         )
         param_rows.append({
-            "Base Name":    base + (" ★" if base in orphan_assignments else ""),
+            "Variable Name":    base + (" ★" if base in orphan_assignments else ""),
             "Display Name": p.display_name[:50],
             "Type":         classify_parameter(base),
             "Timepoints":   ", ".join(all_tps_for_param),
@@ -2987,7 +2987,7 @@ def run_excel_flow(file_bytes: bytes = None, file_name: str = None):
     if param_rows:
         df_rows = pd.DataFrame(param_rows)
         st.dataframe(
-            df_rows[df_rows["Base Name"].str.rstrip(" ★").isin(keep)],
+            df_rows[df_rows["Variable Name"].str.rstrip(" ★").isin(keep)],
             hide_index=True, use_container_width=True)
 
     st.divider()
