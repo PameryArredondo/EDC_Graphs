@@ -3171,7 +3171,6 @@ def run_excel_flow(file_bytes: bytes = None, file_name: str = None):
             for drop_col in ("Mean ± SD", "% Subjects Improved"):
                 if drop_col in stats_df.columns:
                     stats_df = stats_df.drop(columns=[drop_col])
-
             # Build display df with shaded header rows per parameter group
             all_cols = list(stats_df.columns)
             header_rows = []
@@ -3216,6 +3215,14 @@ def run_excel_flow(file_bytes: bytes = None, file_name: str = None):
                 hide_index=True,
                 use_container_width=True,
                 height=min(700, 38 + 35 * len(display_df)),
+                column_config={
+                    "Assessment":                  st.column_config.TextColumn(width="medium"),
+                    "Time Point":                  st.column_config.TextColumn(width="small"),
+                    "n":                           st.column_config.TextColumn(width="small"),
+                    "Mean":                        st.column_config.TextColumn(width="small"),
+                    "p-value":                     st.column_config.TextColumn(width="small"),
+                    "Mean % Change From Baseline": st.column_config.TextColumn(width="small"),
+                },
             )
 
             if is_expert:
