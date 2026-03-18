@@ -2579,9 +2579,14 @@ def run_monaderm_flow(file_bytes: bytes, file_name: str):
     for i, base in enumerate(keep):
         with title_cols[i % n_cols]:
             label = param_renames.get(base, base)
+            default_title = f"{ref} — {label}"
+            current = st.session_state.get(f"mn_title_{base}", default_title)
+            # If the current title still matches the old base name pattern, update it
+            if current == f"{ref} — {base}" or current == f"{ref} — {param_renames.get(base, base)}":
+                current = default_title
             chart_titles[base] = st.text_input(
                 label,
-                value=f"{ref} — {label}",
+                value=current,
                 key=f"mn_title_{base}",
             )
 
