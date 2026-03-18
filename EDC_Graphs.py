@@ -494,11 +494,9 @@ def normalize_subject_id(raw: str) -> str:
     except ValueError:
         return raw
 
-
 # ═══════════════════════════════════════════════════════════════
 # 8. Ecrf DATA PARSING
 # ═══════════════════════════════════════════════════════════════
-
 def parse_ecrf_data(excel_file, ecrf_sheet, ov_exclusion_basenames,
                     global_exclusions=None, center_filter=None):
     global CENTER_FILTER
@@ -561,6 +559,8 @@ def parse_ecrf_data(excel_file, ecrf_sheet, ov_exclusion_basenames,
     q_texts_map      = {}
     tp_appearance    = {}
 
+    last_meas_rep_text = ""
+
     for i, var in enumerate(headers):
         if not var or var.upper() in metadata_upper \
                 or var.startswith('.') or var.startswith('_'):
@@ -569,6 +569,16 @@ def parse_ecrf_data(excel_file, ecrf_sheet, ov_exclusion_basenames,
         tp_prefix = info['timepoint']
         base_name = info['parameter']
         q_text    = q_texts[i] if i < len(q_texts) else ""
+
+        # Carry forward measurement rep label for blank rep columns 2, 3, etc.
+        if not q_text and last_meas_rep_text:
+            canonical_check = strip_trailing_digits(base_name)
+            if canonical_check and canonical_check != base_name:
+                q_text = last_meas_rep_text
+        if _is_measurement_rep(q_text):
+            last_meas_rep_text = q_text
+        else:
+            last_meas_rep_text = ""
 
         if base_name in ov_exclusion_basenames:
             continue
@@ -598,18 +608,14 @@ def parse_ecrf_data(excel_file, ecrf_sheet, ov_exclusion_basenames,
 
         # ── Rep detection ────────────────────────────────────────────────────
         if _is_measurement_rep(q_text):
-            # Strip trailing digit from base_name to get canonical key
-            # e.g. S1_MM1 → S1_MM,  S1_DERM1 → S1_DERM
             canonical = strip_trailing_digits(base_name)
             if not canonical:
                 canonical = base_name
             entry = param_collector[canonical]
-            # Use the first rep's question text, stripping the " 1" suffix
             if not entry['display']:
                 clean = _MEAS_REP_PAT.sub('', q_text).strip().rstrip(',').strip()
-                entry['display']   = clean or canonical
+                entry['display']       = clean or canonical
                 q_texts_map[canonical] = entry['display']
-            # Accumulate rep columns per tp
             entry['tp_rep_cols'].setdefault(tp_prefix, []).append(var)
         else:
             # Normal single-column parameter
@@ -651,6 +657,7 @@ def parse_ecrf_data(excel_file, ecrf_sheet, ov_exclusion_basenames,
         ecrf.baseline_prefix = all_tps_sorted[0]
 
     return ecrf, None
+
 # ═══════════════════════════════════════════════════════════════
 # SECTION 8b — MONADERM HELPERS & PARSER
 # ═══════════════════════════════════════════════════════════════
@@ -2673,12 +2680,15 @@ def run_excel_flow(file_bytes: bytes = None, file_name: str = None):
             st.session_state[k] = None
         st.session_state.uploaded_file_name = file_name
 
-    sheets     = find_ecrf_sheets(io.BytesIO(file_bytes))
-    ecrf_sheet = st.selectbox("EDC data sheet", options=sheets, index=0)
+    sheets = find_ecrf_sheets(io.BytesIO(file_bytes))
+    if len(sheets) == 1:
+        ecrf_sheet = sheets[0]
+    else:
+        ecrf_sheet = st.selectbox("EDC data sheet", options=sheets, index=0)
 
     show_center = st.checkbox(
-            "Show center on charts", value=True,
-            help="When unchecked, the center chip is removed from the chart subtitle row.")
+        "Show center on charts", value=True,
+        help="When unchecked, the center chip is removed from the chart subtitle row.")
 
     ov_sheet      = find_option_values_sheet(io.BytesIO(file_bytes), ecrf_sheet)
     ov_basenames: set = set()
@@ -2725,22 +2735,30 @@ def run_excel_flow(file_bytes: bytes = None, file_name: str = None):
     all_param_stats: OrderedDict = st.session_state.all_param_stats
     auto_dirs: dict              = st.session_state.auto_dirs
 
+    # ── Quick summary metrics in Step 1 ──────────────────────────────────────
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Study",             ecrf.study_ref or "—")
+    m2.metric("Included Subjects", ecrf.n_included)
+    m3.metric("Excluded Subjects", len(ecrf.excluded_subjects))
+
     st.divider()
     st.header("Step 2 — Subject Summary")
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Study",             ecrf.study_ref or "—")
-    c2.metric("Included Subjects", ecrf.n_included)
-    c3.metric("Excluded Subjects", len(ecrf.excluded_subjects))
 
-    status_counts = defaultdict(int)
+    status_counts   = defaultdict(int)
+    status_subjects = defaultdict(list)
     for s in ecrf.all_subjects_info:
         key = "EXCLUDED" if "EXCLUDED" in s['status_upper'] else s['status_upper']
         status_counts[key] += 1
+        status_subjects[key].append(s['sid'])
+
     st.dataframe(
-        pd.DataFrame([{"Status": k, "Count": v,
-                       "In Analysis": "✓" if k in INCLUDED_STATUSES else ""}
-                      for k, v in sorted(status_counts.items())]),
-        hide_index=True, use_container_width=False)
+        pd.DataFrame([{
+            "Status":      k,
+            "Count":       v,
+            "In Analysis": "✓" if k in INCLUDED_STATUSES else "",
+            "Subject IDs": "" if k == "COMPLETED" else ", ".join(sorted(status_subjects[k])),
+        } for k, v in sorted(status_counts.items())]),
+        hide_index=True, use_container_width=True)
 
     st.divider()
     st.header("Step 3 — Timepoint Selection")
@@ -2942,19 +2960,27 @@ def run_excel_flow(file_bytes: bytes = None, file_name: str = None):
 
     param_rows = []
     for base in filtered_names:
-        p         = ecrf.parameters[base]
-        s         = all_param_stats.get(base, {})
-        bl_mean   = s.get(ecrf.baseline_prefix, {}).get('mean')
-        last_tps  = [tp for tp in active_tps if tp in s and tp != ecrf.baseline_prefix]
+        p        = ecrf.parameters[base]
+        s        = all_param_stats.get(base, {})
+        bl_mean  = s.get(ecrf.baseline_prefix, {}).get('mean')
+        last_tps = [tp for tp in active_tps if tp in s and tp != ecrf.baseline_prefix]
         last_mean = s[last_tps[-1]]['mean'] if last_tps else None
+        all_tps_for_param = sorted(
+            set(list(p.tp_columns.keys()) + list(p.rep_columns.keys())),
+            key=tp_sort_key,
+        )
         param_rows.append({
             "Base Name":    base + (" ★" if base in orphan_assignments else ""),
             "Display Name": p.display_name[:50],
             "Type":         classify_parameter(base),
-            "Timepoints":   ", ".join(p.tp_columns.keys()),
+            "Timepoints":   ", ".join(all_tps_for_param),
+            "Reps":         f"{len(next(iter(p.rep_columns.values()), []))} reps averaged"
+                            if p.is_rep_param() else "",
             "BL Mean":      f"{bl_mean:.2f}" if bl_mean is not None else "—",
             "Last Mean":    f"{last_mean:.2f}" if last_mean is not None else "—",
-            "Auto Dir": "Decrease = Improvement" if auto_dirs.get(base, "lower") == "lower" else "Increase = Improvement",
+            "Auto Dir":     "Decrease = Improvement"
+                            if auto_dirs.get(base, "lower") == "lower"
+                            else "Increase = Improvement",
         })
 
     keep = st.multiselect(
@@ -3161,6 +3187,7 @@ def main():
         "mn_file_name", "mn_scan", "mn_rep_df", "mn_included_reps",
         "mn_stats_df", "mn_stats_edited", "mn_ecrf",
         "mn_param_stats", "mn_auto_dirs",
+        "mn_param_renames", "mn_preview_idx",
     ):
         if key not in st.session_state:
             st.session_state[key] = None
