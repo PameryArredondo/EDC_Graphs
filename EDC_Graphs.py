@@ -2680,7 +2680,7 @@ def run_excel_flow(file_bytes: bytes = None, file_name: str = None):
     st.header("Step 1 — Configure")
 
     if file_name != st.session_state.uploaded_file_name:
-        for k in ("ecrf", "all_param_stats", "auto_dirs"):
+        for k in ("ecrf", "all_param_stats", "auto_dirs", "ecrf_tp_order"):
             st.session_state[k] = None
         st.session_state.uploaded_file_name = file_name
 
@@ -2731,6 +2731,7 @@ def run_excel_flow(file_bytes: bytes = None, file_name: str = None):
         st.session_state.all_param_stats = all_param_stats
         st.session_state.auto_dirs       = auto_dirs
         st.session_state["ecrf_param_overrides"] = {}
+        st.session_state["ecrf_tp_order"]        = None
         st.rerun()
 
     if st.session_state.ecrf is None:
@@ -2812,7 +2813,10 @@ def run_excel_flow(file_bytes: bytes = None, file_name: str = None):
         sorted_labels  = sort_items(display_labels, direction="vertical")
         sorted_tps     = [active_tps[display_labels.index(l)] for l in sorted_labels]
         if sorted_tps != active_tps:
-            active_tps = sorted_tps
+            st.session_state["ecrf_tp_order"] = sorted_tps
+        if st.session_state.get("ecrf_tp_order") and \
+                set(st.session_state["ecrf_tp_order"]) == set(active_tps):
+            active_tps = st.session_state["ecrf_tp_order"]
             st.caption("Custom order applied: "
                        + " → ".join(TP_DISPLAY.get(t, t) for t in active_tps))
 
