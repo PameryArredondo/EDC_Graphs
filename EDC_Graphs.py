@@ -1281,7 +1281,6 @@ def build_stats_table(ecrf: ECRFData,
             tp_label = TP_DISPLAY.get(tp, tp)
 
             mean_val = s['mean']
-            std_val  = s['std']
             n        = s['n']
 
             if is_bl:
@@ -1302,18 +1301,10 @@ def build_stats_table(ecrf: ECRFData,
                 "Assessment":                  param.display_name,
                 "Time Point":                  tp_label,
                 "n":                           n,
-                "Mean ± SD":                   f"{fmt_value(mean_val)} ± {fmt_value(std_val)}",
+                "Mean":                        fmt_value(mean_val),
                 "p-value":                     pval_str,
                 "Mean % Change From Baseline": pct_str,
             }
-
-            if is_expert:
-                if is_bl or bl_col is None or tp_col is None:
-                    row["% Subjects Improved"] = ""
-                else:
-                    pct_imp = compute_pct_improved(df_data, bl_col, tp_col, imp_dir)
-                    row["% Subjects Improved"] = (
-                        f"{round_half_up(pct_imp, 2):.2f}%" if pct_imp is not None else "—")
 
             if is_tolerance and tp_col and tp_col in df_data.columns:
                 tp_vals = pd.to_numeric(df_data[tp_col], errors='coerce').dropna().values
