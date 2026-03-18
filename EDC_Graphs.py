@@ -3063,9 +3063,9 @@ def run_excel_flow(file_bytes: bytes = None, file_name: str = None):
         if dir_mode == "Accept all auto-detected directions":
             improvement_dirs = {k: v for k, v in auto_dirs.items() if k in keep}
         elif dir_mode == "Set ALL parameters to the same direction":
-            unified   = st.radio("Direction:", ["Lower = Improvement", "Higher = Improvement"],
+            unified   = st.radio("Direction:", ["Decrease = Improvement", "Increase = Improvement"],
                                  horizontal=True, key="ecrf_unified_dir")
-            direction = "lower" if "Lower" in unified else "higher"
+            direction = "lower" if "Decrease" in unified else "higher"
             improvement_dirs = {k: direction for k in keep}
         else:
             dcols = st.columns(n_cols)
@@ -3074,11 +3074,11 @@ def run_excel_flow(file_bytes: bytes = None, file_name: str = None):
                 with dcols[i % n_cols]:
                     choice = st.radio(
                         f"**{base}** — {p.display_name[:30]}",
-                        options=["Lower = Improvement", "Higher = Improvement"],
+                        options=["Decrease = Improvement", "Increase = Improvement"],
                         index=0 if auto_dirs.get(base, "lower") == "lower" else 1,
                         key=f"dir_{base}",
                     )
-                    improvement_dirs[base] = "lower" if "Lower" in choice else "higher"
+                    improvement_dirs[base] = "lower" if "Decrease" in choice else "higher"
 
         st.markdown("**Chart titles**")
         chart_titles: dict = {}
