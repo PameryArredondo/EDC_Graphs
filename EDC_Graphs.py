@@ -2095,6 +2095,10 @@ def run_manual_entry_flow():
 # MONADERM STREAMLIT FLOW
 # ═══════════════════════════════════════════════════════════════
 
+# ═══════════════════════════════════════════════════════════════
+# MONADERM STREAMLIT FLOW
+# ═══════════════════════════════════════════════════════════════
+
 def run_monaderm_flow(file_bytes: bytes, file_name: str):
     # ── Persistent state keys ────────────────────────────────────────────────
     for k in ("mn_file_name", "mn_scan", "mn_rep_df",
@@ -2492,8 +2496,8 @@ def run_monaderm_flow(file_bytes: bytes, file_name: str):
     keep = list(ecrf_mn.parameters.keys())
 
     # Parameter renaming
+    param_renames: dict = {}
     with st.expander("Rename parameters for charts (optional)", expanded=False):
-        param_renames: dict = {}
         for base in keep:
             renamed = st.text_input(
                 base, value=base, key=f"mn_rename_{base}",
@@ -2501,7 +2505,12 @@ def run_monaderm_flow(file_bytes: bytes, file_name: str):
             )
             param_renames[base] = renamed.strip() or base
 
-    # Apply renames to chart_titles default values and ecrf display names
+    # Ensure all keys exist even if expander was never opened
+    for base in keep:
+        if base not in param_renames:
+            param_renames[base] = base
+
+    # Apply renames to ecrf display names so charts pick them up
     for base in keep:
         ecrf_mn.parameters[base].display_name = param_renames[base]
 
