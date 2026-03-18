@@ -2731,15 +2731,12 @@ def run_excel_flow(file_bytes: bytes = None, file_name: str = None):
     all_param_stats: OrderedDict = st.session_state.all_param_stats
     auto_dirs: dict              = st.session_state.auto_dirs
 
-    # ── Quick summary metrics in Step 1 ──────────────────────────────────────
+    # ── Quick summary metrics + subject breakdown in Step 1 ──────────────────
     st.markdown(
         f"**Study:** {ecrf.study_ref or '—'} &nbsp;·&nbsp; "
         f"**Included:** {ecrf.n_included} &nbsp;·&nbsp; "
         f"**Excluded:** {len(ecrf.excluded_subjects)}"
     )
-
-    st.divider()
-    st.header("Step 2 — Subject Summary")
 
     status_counts   = defaultdict(int)
     status_subjects = defaultdict(list)
@@ -2748,17 +2745,18 @@ def run_excel_flow(file_bytes: bytes = None, file_name: str = None):
         status_counts[key] += 1
         status_subjects[key].append(s['sid'])
 
-    st.dataframe(
-        pd.DataFrame([{
-            "Status":      k,
-            "Count":       v,
-            "In Analysis": "✓" if k in INCLUDED_STATUSES else "",
-            "Subject IDs": "" if k == "COMPLETED" else ", ".join(sorted(status_subjects[k])),
-        } for k, v in sorted(status_counts.items())]),
-        hide_index=True, use_container_width=True)
+    with st.expander("👥 Subject Status Breakdown", expanded=False):
+        st.dataframe(
+            pd.DataFrame([{
+                "Status":      k,
+                "Count":       v,
+                "In Analysis": "✓" if k in INCLUDED_STATUSES else "",
+                "Subject IDs": "" if k == "COMPLETED" else ", ".join(sorted(status_subjects[k])),
+            } for k, v in sorted(status_counts.items())]),
+            hide_index=True, use_container_width=True)
 
     st.divider()
-    st.header("Step 3 — Timepoint Selection")
+    st.header("Step 2 — Timepoint Selection")
 
     all_tps    = ecrf.timepoint_order
     mapped_tps = [t for t in all_tps if t.upper() in {x.upper() for x in KNOWN_TP_ORDER}]
@@ -2830,7 +2828,7 @@ def run_excel_flow(file_bytes: bytes = None, file_name: str = None):
 
     if ecrf.orphaned_params:
         st.divider()
-        st.header("Step 4 — Orphaned Parameters")
+        st.header("Step 3 — Orphaned Parameters")
         st.caption(
             "These columns have no timepoint prefix. Assign each to a timepoint "
             "to include it in the analysis, or leave as (skip)."
@@ -2941,7 +2939,7 @@ def run_excel_flow(file_bytes: bytes = None, file_name: str = None):
         step_offset = 1
 
     st.divider()
-    st.header(f"Step {4 + step_offset} — Parameters")
+    st.header(f"Step {3 + step_offset} — Parameters")
 
     all_param_names = list(ecrf.parameters.keys())
 
@@ -3052,7 +3050,7 @@ def run_excel_flow(file_bytes: bytes = None, file_name: str = None):
             hide_index=True, use_container_width=True)
 
     st.divider()
-    st.header(f"Step {5 + step_offset} — Charts")
+    st.header(f"Step {4 + step_offset} — Charts")
 
     n_cols = min(max(len(keep), 1), 3)
 
@@ -3127,19 +3125,15 @@ def run_excel_flow(file_bytes: bytes = None, file_name: str = None):
     else:
         st.warning("No parameters selected.")
 
-    st.divider()
-    st.header(f"Step {6 + step_offset} — Data Quality")
-
     if keep and active_tps:
-        dq_issues   = scan_data_quality(ecrf, keep, active_tps)
-        dq_summary  = summarise_data_quality(dq_issues)
-        total       = dq_summary['total_issues']
-        n_affected  = dq_summary['affected_subjects']
-        per_subject = dq_summary['per_subject']
-
-        if total == 0:
-            st.success("✅ No data quality issues detected.")
-        else:
+        dq_issues  = scan_data_quality(ecrf, keep, active_tps)
+        dq_summary = summarise_data_quality(dq_issues)
+        total      = dq_summary['total_issues']
+        if total > 0:
+            n_affected  = dq_summary['affected_subjects']
+            per_subject = dq_summary['per_subject']
+            st.divider()
+            st.header(f"Step {5 + step_offset} — Data Quality")
             st.warning(
                 f"⚠️ **{total} missing value(s)** across **{n_affected} subject(s)**. "
                 "Charts will use available data only."
@@ -3152,16 +3146,15 @@ def run_excel_flow(file_bytes: bytes = None, file_name: str = None):
                            for entry in per_subject[sid]]
                 st.dataframe(pd.DataFrame(ps_rows),
                              hide_index=True, use_container_width=True)
-    else:
-        st.info("Select parameters and timepoints above to run the data quality scan.")
+            step_offset += 1
 
     st.divider()
-    st.header(f"Step {7 + step_offset} — Statistical Summary")
+    st.header(f"Step {5 + step_offset} — Statistical Summary")
     st.caption("Review stats before generating the PDF. "
                "Verify % change direction and p-values are as expected.")
 
     with st.expander("📊 View Statistical Summary Table", expanded=False):
-     if keep and active_tps:
+    if keep and active_tps:
         stats_df = build_stats_table(
             ecrf, all_param_stats, improvement_dirs,
             keep, active_tps, analysis_mode)
@@ -3250,11 +3243,11 @@ def run_excel_flow(file_bytes: bytes = None, file_name: str = None):
             )
         else:
             st.info("No stats available for the current selection.")
-     else:
+    else:
         st.info("Select parameters and timepoints above to generate the stats table.")
 
     st.divider()
-    st.header(f"Step {8 + step_offset} — Generate PDF")
+    st.header(f"Step {6 + step_offset} — Generate PDF")
     st.write(f"**{len(keep)}** parameter(s) · "
              f"**{len(active_tps)}** timepoint(s) · "
              f"**{ecrf.n_included}** included subject(s)")
