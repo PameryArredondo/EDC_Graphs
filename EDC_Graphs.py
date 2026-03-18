@@ -3102,10 +3102,10 @@ def main():
 
     if file_format == "monaderm":
         st.success("📡 Monaderm RAW DATA format detected.")
-        run_monaderm_flow()
+        run_monaderm_flow(file_bytes=file_bytes, file_name=uploaded.name)
     else:
         st.success("📋 eCRF format detected.")
-        run_excel_flow(file_bytes=file_bytes, file_name=file_name)
+        run_excel_flow(file_bytes=file_bytes, file_name=uploaded.name)
 
 
 if __name__ == "__main__":
