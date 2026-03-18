@@ -478,7 +478,7 @@ def normalize_subject_id(raw: str) -> str:
 
 
 # ═══════════════════════════════════════════════════════════════
-# 8. eCRF DATA PARSING
+# 8. EDC DATA PARSING
 # ═══════════════════════════════════════════════════════════════
 
 def parse_ecrf_data(excel_file, ecrf_sheet, ov_exclusion_basenames,
@@ -502,7 +502,7 @@ def parse_ecrf_data(excel_file, ecrf_sheet, ov_exclusion_basenames,
     c_ref  = next((h for h in headers if h.upper() == COL_STUDY),   None)
 
     if not c_subj or not c_stat:
-        return None, "eCRF sheet is missing SUBJECT ID or STATUS column."
+        return None, "EDC sheet is missing SUBJECT ID or STATUS column."
 
     if c_ref:
         refs           = df_data[c_ref].dropna().astype(str).unique()
@@ -645,34 +645,10 @@ def sort_timepoints_by_appearance(timepoint_order: list,
 
 def find_orphan_conflicts(
     ecrf: "ECRFData",
-    assignments: dict,          # {orphan_base: tp_key}
+    assignments: dict,
     df_included: "pd.DataFrame",
     similarity_threshold: float = 0.75,
 ) -> list:
-    """
-    For each orphan assignment, check whether:
-      (a) the stripped base name matches an existing parameter, AND
-      (b) the assigned timepoint is already occupied by that parameter, AND
-      (c) the two columns' Row-2 descriptions are similar enough.
-
-    Returns a list of dicts, one per conflict:
-      {
-        'orphan_base':    str,   # original orphan key e.g. "FIRM2"
-        'stripped_base':  str,   # e.g. "FIRM"
-        'existing_base':  str,   # matched existing parameter key
-        'tp':             str,   # timepoint key e.g. "W4"
-        'orphan_col':     str,   # column name in df
-        'existing_col':   str,   # column name in df
-        'orphan_display': str,
-        'existing_display': str,
-        'orphan_mean':    float | None,
-        'existing_mean':  float | None,
-        'orphan_n':       int,
-        'existing_n':     int,
-        'sample_df':      pd.DataFrame,  # 5-row side-by-side sample
-        'similarity':     float,
-      }
-    """
     from difflib import SequenceMatcher
 
     conflicts = []
@@ -687,25 +663,21 @@ def find_orphan_conflicts(
 
         stripped = strip_trailing_digits(orphan_base)
 
-        # Find a matching existing parameter by stripped name or description
         matched_existing = None
         best_sim = 0.0
 
         orphan_display = ecrf.orphaned_params[orphan_base].display_name or orphan_base
 
         for existing_base, existing_param in ecrf.parameters.items():
-            # Must occupy the same timepoint
             if tp not in existing_param.tp_columns:
                 continue
 
-            # Check name similarity (stripped base vs existing base)
             name_sim = SequenceMatcher(
                 None,
                 stripped.upper(),
                 existing_base.upper(),
             ).ratio()
 
-            # Check description similarity
             existing_display = existing_param.display_name or existing_base
             desc_sim = SequenceMatcher(
                 None,
@@ -728,11 +700,9 @@ def find_orphan_conflicts(
         if existing_col not in df_included.columns:
             continue
 
-        # Compute per-column stats
         orphan_vals   = pd.to_numeric(df_included[orphan_col],   errors="coerce").dropna()
         existing_vals = pd.to_numeric(df_included[existing_col], errors="coerce").dropna()
 
-        # Build 5-row side-by-side sample aligned on subject ID
         sample = (
             df_included[["_SID", existing_col, orphan_col]]
             .rename(columns={
@@ -774,14 +744,6 @@ def apply_orphan_assignments(
     assignments: dict,
     merge_decisions: dict = None,
 ) -> "ECRFData":
-    """
-    Applies orphan timepoint assignments to ecrf.parameters.
-
-    merge_decisions keys:
-      orphan_base          -> True (merge) or False (keep separate)
-      __target_orphan_base -> the exact existing parameter key to merge into,
-                             stashed by the UI from find_orphan_conflicts results
-    """
     if merge_decisions is None:
         merge_decisions = {}
 
@@ -793,7 +755,6 @@ def apply_orphan_assignments(
         if orphan_col is None:
             continue
 
-        # Add timepoint to order if not already present
         if tp not in ecrf.timepoint_order:
             ecrf.timepoint_order = sorted(
                 ecrf.timepoint_order + [tp], key=tp_sort_key
@@ -804,14 +765,10 @@ def apply_orphan_assignments(
 
         target_base = None
         if should_merge:
-            # First choice: use the exact key stashed by the UI during conflict review.
-            # This survives group_duplicate_parameters renaming the canonical key.
             stashed = merge_decisions.get(f"__target_{orphan_base}")
             if stashed and stashed in ecrf.parameters and tp in ecrf.parameters[stashed].tp_columns:
                 target_base = stashed
             else:
-                # Fallback: scan for a parameter that owns this tp and whose key
-                # matches either the stripped base or the original orphan base.
                 for existing_base, existing_param in ecrf.parameters.items():
                     if tp in existing_param.tp_columns and (
                         existing_base.upper() == stripped.upper()
@@ -821,12 +778,9 @@ def apply_orphan_assignments(
                         break
 
         if target_base and should_merge:
-            # Merge: point the existing parameter's tp slot at the orphan column.
-            # Explicit user decision so overwrite is intentional.
             ecrf.parameters[target_base].tp_columns[tp] = orphan_col
             ecrf.col_map[(tp, target_base)] = orphan_col
         else:
-            # Keep separate: register as its own parameter entry.
             if orphan_base not in ecrf.parameters:
                 ecrf.parameters[orphan_base] = ecrf.orphaned_params[orphan_base]
             ecrf.parameters[orphan_base].tp_columns[tp] = orphan_col
@@ -838,7 +792,7 @@ def apply_orphan_assignments(
 # 11. STATISTICS
 # ═══════════════════════════════════════════════════════════════
 
-def compute_parameter_stats(ecrf, param, min_pairs=30):
+def compute_parameter_stats(ecrf, param, min_pairs=3):
     df        = ecrf.df
     bl_prefix = ecrf.baseline_prefix
     result    = OrderedDict()
@@ -1041,11 +995,6 @@ def build_stats_table(ecrf: ECRFData,
 def build_asfs_threshold_table(ecrf: ECRFData,
                                 keep: list,
                                 active_tps: list) -> pd.DataFrame:
-    """
-    Port of VBA ASFS threshold classification table.
-    Bands: Normal/Very Slight 0-15, Mild 16-24, Moderate 25-34, Severe 35-80.
-    Detects ASFS Score param by base name; returns empty DF if not found.
-    """
     asfs_base = next(
         (b for b in keep if is_asfs_score_param(b) and b in ecrf.parameters),
         None
@@ -1150,44 +1099,40 @@ def draw_solid_bar(ax, x, y, width, height, color):
     from matplotlib.path import Path as MplPath
     from matplotlib.patches import PathPatch
 
-    # Convert a fixed pixel radius into data units so rounding is
-    # always visible regardless of axis scale or bar height.
     fig = ax.get_figure()
-    fig.canvas.draw()  # ensure transforms are up to date
+    fig.canvas.draw()
 
-    # 12 display points → data-unit radius in x and y independently
     disp_r = 12.0
     inv    = ax.transData.inverted()
     origin = inv.transform(ax.transData.transform((x, y)))
     corner = inv.transform(ax.transData.transform((x, y)) + np.array([disp_r, disp_r]))
-    rx = abs(corner[0] - origin[0])   # x radius in data units
-    ry = abs(corner[1] - origin[1])   # y radius in data units
+    rx = abs(corner[0] - origin[0])
+    ry = abs(corner[1] - origin[1])
 
-    # Cap ry so the curve never exceeds the bar height
     ry = min(ry, height * 0.4)
     rx = min(rx, width  * 0.4)
 
     verts = [
-        (x,             y),              # 1  MOVETO       bottom-left
-        (x,             y + height - ry),# 2  LINETO       left side up
-        (x,             y + height),     # 3  CURVE3 ctrl  top-left
-        (x + rx,        y + height),     # 4  CURVE3 end   top-left
-        (x + width - rx,y + height),     # 5  LINETO       top across
-        (x + width,     y + height),     # 6  CURVE3 ctrl  top-right
-        (x + width,     y + height - ry),# 7  CURVE3 end   top-right
-        (x + width,     y),              # 8  LINETO       right side down
-        (x,             y),              # 9  CLOSEPOLY
+        (x,             y),
+        (x,             y + height - ry),
+        (x,             y + height),
+        (x + rx,        y + height),
+        (x + width - rx,y + height),
+        (x + width,     y + height),
+        (x + width,     y + height - ry),
+        (x + width,     y),
+        (x,             y),
     ]
     codes = [
-        MplPath.MOVETO,    # 1
-        MplPath.LINETO,    # 2
-        MplPath.CURVE3,    # 3
-        MplPath.CURVE3,    # 4
-        MplPath.LINETO,    # 5
-        MplPath.CURVE3,    # 6
-        MplPath.CURVE3,    # 7
-        MplPath.LINETO,    # 8
-        MplPath.CLOSEPOLY, # 9
+        MplPath.MOVETO,
+        MplPath.LINETO,
+        MplPath.CURVE3,
+        MplPath.CURVE3,
+        MplPath.LINETO,
+        MplPath.CURVE3,
+        MplPath.CURVE3,
+        MplPath.LINETO,
+        MplPath.CLOSEPOLY,
     ]
     ax.add_patch(PathPatch(MplPath(verts, codes), fc=color, ec="none", zorder=3))
 
@@ -1368,7 +1313,7 @@ def create_parameter_chart(ecrf, param, param_stats, improvement_dir,
 
     chip_gap     = 0.22
     chip_start_x = 0.5 - (len(chip_texts) - 1) * chip_gap / 2
-    fig.canvas.draw()  # recalculate to ensure text bounds for chips are correct
+    fig.canvas.draw()
     for ci, ct in enumerate(chip_texts):
         draw_pill_chip(fig, chip_start_x + ci * chip_gap, 0.855, ct, fontsize=9.5)
 
@@ -1420,7 +1365,7 @@ def generate_pdf_bytes(ecrf, all_param_stats, improvement_dirs, chart_titles,
 
 
 # ═══════════════════════════════════════════════════════════════
-# MANUAL ENTRY HELPERS 
+# MANUAL ENTRY HELPERS
 # ═══════════════════════════════════════════════════════════════
 
 def _safe_float(s) -> float | None:
@@ -1482,20 +1427,18 @@ def _manual_df_to_ecrf_and_stats(
             if is_bl:
                 bl_mean = mean_val
 
-            # significant flag comes straight from the checkbox column
             sig = bool(row.get("significant", False)) if not is_bl else False
 
             stat_dict[tp] = {
                 "mean":        mean_val,
                 "std":         0.0,
                 "n":           n_val,
-                "pct_change":  None,          # calculated below
+                "pct_change":  None,
                 "values":      np.array([mean_val]),
                 "significant": sig,
             }
             pi.tp_columns[tp] = f"__manual__{tp}"
 
-        # back-calculate % change from means
         if bl_mean is not None and bl_mean != 0:
             for tp, s in stat_dict.items():
                 if tp != baseline_tp:
@@ -1516,7 +1459,7 @@ def _manual_df_to_ecrf_and_stats(
 
 
 # ═══════════════════════════════════════════════════════════════
-# run_manual_entry_flow  (full replacement)
+# MANUAL ENTRY FLOW
 # ═══════════════════════════════════════════════════════════════
 
 def run_manual_entry_flow():
@@ -1534,9 +1477,6 @@ def run_manual_entry_flow():
         if study_num or analysis_lbl else ""
     )
 
-    # ══════════════════════════════════════════════
-    # PHASE 1 — STRUCTURE SETUP
-    # ══════════════════════════════════════════════
     st.divider()
     st.subheader("Phase 1 — Define Parameters & Timepoints")
 
@@ -1613,9 +1553,6 @@ def run_manual_entry_flow():
     confirmed_names  = st.session_state["me_param_names"]
     confirmed_tp_map = st.session_state["me_param_tp_map"]
 
-    # ══════════════════════════════════════════════
-    # PHASE 2 — DATA ENTRY  (n, Mean, Significant?)
-    # ══════════════════════════════════════════════
     st.divider()
     st.subheader("Phase 2 — Enter Statistics")
     st.caption(
@@ -1635,7 +1572,6 @@ def run_manual_entry_flow():
 
             st.markdown(f"#### {p_name}")
 
-            # header row
             hdr = st.columns([1.6, 0.9, 1.8, 1.6])
             for h, lbl in zip(hdr, ["Time Point", "n", "Mean", "Significant?"]):
                 h.markdown(f"**{lbl}**")
@@ -1644,7 +1580,6 @@ def run_manual_entry_flow():
                 is_bl = (tp == bl_tp)
                 c     = st.columns([1.6, 0.9, 1.8, 1.6])
 
-                # timepoint label
                 c[0].markdown(
                     f"**{TP_DISPLAY.get(tp, tp)}** *(baseline)*"
                     if is_bl else TP_DISPLAY.get(tp, tp)
@@ -1660,7 +1595,6 @@ def run_manual_entry_flow():
                 )
 
                 if is_bl:
-                    # baseline — significance not applicable
                     c[3].markdown("*n/a — baseline*")
                     sig_val = False
                 else:
@@ -1720,9 +1654,6 @@ def run_manual_entry_flow():
         key=tp_sort_key,
     )
 
-    # ══════════════════════════════════════════════
-    # PHASE 3 — CONFIRM % CHANGE + DIRECTION
-    # ══════════════════════════════════════════════
     st.divider()
     st.subheader("Phase 3 — Confirm % Change & Improvement Direction")
     st.caption(
@@ -1731,7 +1662,6 @@ def run_manual_entry_flow():
         "the mean in Phase 2. Then set the improvement direction."
     )
 
-    # Build a confirmation preview table
     preview_rows = []
     for p_name in keep_m:
         s_dict  = stats_m[p_name]
@@ -1802,9 +1732,6 @@ def run_manual_entry_flow():
 
     chart_titles_m = {k: f"{study_ref} — {k}" for k in keep_m}
 
-    # ══════════════════════════════════════════════
-    # PHASE 4 — PREVIEW
-    # ══════════════════════════════════════════════
     st.divider()
     st.subheader("Phase 4 — Preview")
 
@@ -1832,9 +1759,6 @@ def run_manual_entry_flow():
         else:
             st.info("No stats found for this parameter.")
 
-    # ══════════════════════════════════════════════
-    # PHASE 5 — GENERATE PDF
-    # ══════════════════════════════════════════════
     st.divider()
     st.subheader("Phase 5 — Generate PDF")
     st.write(
@@ -1860,14 +1784,11 @@ def run_manual_entry_flow():
         )
         
 def run_excel_flow():
-    # ══════════════════════════════════════════════
-    # STEP 1 — Upload
-    # ══════════════════════════════════════════════
     st.header("Step 1 — Upload Workbook")
-    uploaded = st.file_uploader("Select eCRF Excel workbook (.xlsx / .xls)",
+    uploaded = st.file_uploader("Select EDC Excel workbook (.xlsx / .xls)",
                                  type=["xlsx", "xls"])
     if uploaded is None:
-        st.info("Upload an eCRF Excel workbook to begin.")
+        st.info("Upload an EDC Excel workbook to begin.")
         st.stop()
 
     if uploaded.name != st.session_state.uploaded_file_name:
@@ -1878,7 +1799,7 @@ def run_excel_flow():
     file_bytes = uploaded.read()
 
     sheets     = find_ecrf_sheets(io.BytesIO(file_bytes))
-    ecrf_sheet = st.selectbox("eCRF data sheet", options=sheets, index=0)
+    ecrf_sheet = st.selectbox("EDC data sheet", options=sheets, index=0)
 
     show_center = st.checkbox(
             "Show center on charts", value=True,
@@ -1904,8 +1825,8 @@ def run_excel_flow():
             try:    global_exclusions.append(f"{int(ex):04d}")
             except: global_exclusions.append(ex)
 
-    if st.button("🔍 Parse eCRF Data", type="primary"):
-        with st.spinner("Parsing eCRF data…"):
+    if st.button("🔍 Parse EDC Data", type="primary"):
+        with st.spinner("Parsing EDC data…"):
             ecrf, err = parse_ecrf_data(
                 io.BytesIO(file_bytes), ecrf_sheet, ov_basenames,
                 global_exclusions)
@@ -1929,9 +1850,6 @@ def run_excel_flow():
     all_param_stats: OrderedDict = st.session_state.all_param_stats
     auto_dirs: dict              = st.session_state.auto_dirs
 
-    # ══════════════════════════════════════════════
-    # STEP 2 — Subject Summary
-    # ══════════════════════════════════════════════
     st.divider()
     st.header("Step 2 — Subject Summary")
     c1, c2, c3 = st.columns(3)
@@ -1949,9 +1867,6 @@ def run_excel_flow():
                       for k, v in sorted(status_counts.items())]),
         hide_index=True, use_container_width=False)
 
-    # ══════════════════════════════════════════════
-    # STEP 3 — Timepoint Selection
-    # ══════════════════════════════════════════════
     st.divider()
     st.header("Step 3 — Timepoint Selection")
 
@@ -1975,7 +1890,7 @@ def run_excel_flow():
             expanded=False,
         ):
             st.caption(
-                "These timepoints exist in the eCRF but are not in the standard list. "
+                "These timepoints exist in the EDC but are not in the standard list. "
                 "Select them above to include them in the analysis."
             )
             st.dataframe(
@@ -2012,9 +1927,6 @@ def run_excel_flow():
             st.caption("Custom order applied: "
                        + " → ".join(TP_DISPLAY.get(t, t) for t in active_tps))
 
-    # ══════════════════════════════════════════════
-    # STEP 4 — Orphaned Parameters (conditional)
-    # ══════════════════════════════════════════════
     orphan_assignments: dict = {}
     merge_decisions: dict    = {}
     step_offset = 0
@@ -2131,9 +2043,6 @@ def run_excel_flow():
 
         step_offset = 1
 
-    # ══════════════════════════════════════════════
-    # STEP 4/5 — Parameters
-    # ══════════════════════════════════════════════
     st.divider()
     st.header(f"Step {4 + step_offset} — Parameters")
 
@@ -2185,9 +2094,6 @@ def run_excel_flow():
             df_rows[df_rows["Base Name"].str.rstrip(" ★").isin(keep)],
             hide_index=True, use_container_width=True)
 
-    # ══════════════════════════════════════════════
-    # STEP 5/6 — Improvement Direction
-    # ══════════════════════════════════════════════
     st.divider()
     st.header(f"Step {5 + step_offset} — Improvement Direction")
 
@@ -2220,9 +2126,6 @@ def run_excel_flow():
                 )
                 improvement_dirs[base] = "lower" if "Decrease" in choice else "higher"
 
-    # ══════════════════════════════════════════════
-    # STEP 6/7 — Chart Titles
-    # ══════════════════════════════════════════════
     st.divider()
     st.header(f"Step {6 + step_offset} — Chart Titles")
     with st.expander("Edit chart titles (click to expand)", expanded=False):
@@ -2239,9 +2142,6 @@ def run_excel_flow():
             for base in keep
         }
 
-    # ══════════════════════════════════════════════
-    # STEP 7/8 — Preview
-    # ══════════════════════════════════════════════
     st.divider()
     st.header(f"Step {7 + step_offset} — Preview")
     if keep:
@@ -2263,9 +2163,6 @@ def run_excel_flow():
     else:
         st.warning("No parameters selected.")
 
-    # ══════════════════════════════════════════════
-    # STEP 8/9 — Data Quality
-    # ══════════════════════════════════════════════
     st.divider()
     st.header(f"Step {8 + step_offset} — Data Quality")
 
@@ -2294,9 +2191,6 @@ def run_excel_flow():
     else:
         st.info("Select parameters and timepoints above to run the data quality scan.")
 
-    # ══════════════════════════════════════════════
-    # STEP 9/10 — Statistical Summary
-    # ══════════════════════════════════════════════
     st.divider()
     st.header(f"Step {9 + step_offset} — Statistical Summary")
     st.caption("Review stats before generating the PDF. "
@@ -2350,9 +2244,6 @@ def run_excel_flow():
     else:
         st.info("Select parameters and timepoints above to generate the stats table.")
 
-    # ══════════════════════════════════════════════
-    # STEP 10/11 — Generate PDF
-    # ══════════════════════════════════════════════
     st.divider()
     st.header(f"Step {10 + step_offset} — Generate PDF")
     st.write(f"**{len(keep)}** parameter(s) · "
@@ -2379,15 +2270,15 @@ def run_excel_flow():
         st.download_button(
             label="⬇️ Download PDF",
             data=pdf_bytes,
-            file_name=f"{stem}_eCRF_Charts.pdf",
+            file_name=f"{stem}_EDC_Charts.pdf",
             mime="application/pdf")
 
 
 def main():
-    st.set_page_config(page_title="eCRF Chart Generator",
+    st.set_page_config(page_title="EDC Data Visualizations Generator",
                        page_icon="📊", layout="wide")
-    st.title("📊 eCRF Chart Generator v1.6")
-    st.caption("Generates mean-change-from-baseline charts for eCRF data.")
+    st.title("📊 EDC Data Visualizations Generator v2.0")
+    st.caption("Generates mean-change-from-baseline charts for EDC datasets.")
 
     for key in ("ecrf", "all_param_stats", "auto_dirs", "uploaded_file_name"):
         if key not in st.session_state:
