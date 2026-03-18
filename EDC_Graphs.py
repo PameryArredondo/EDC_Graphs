@@ -3176,6 +3176,11 @@ def run_excel_flow(file_bytes: bytes = None, file_name: str = None):
             keep, active_tps, analysis_mode)
 
         if not stats_df.empty:
+            # Drop columns not needed in display or export
+            for drop_col in ("Mean ± SD", "% Subjects Improved"):
+                if drop_col in stats_df.columns:
+                    stats_df = stats_df.drop(columns=[drop_col])
+
             # Build display df with shaded header rows per parameter group
             all_cols = list(stats_df.columns)
             header_rows = []
@@ -3233,10 +3238,6 @@ def run_excel_flow(file_bytes: bytes = None, file_name: str = None):
                     st.dataframe(asfs_df, hide_index=True,
                                  use_container_width=True,
                                  height=min(400, 38 + 35 * len(asfs_df)))
-                else:
-                    st.info("No ASFS Score parameter detected in the current selection. "
-                            "The ASFS threshold table requires a column whose base name "
-                            "matches ASFS, ASFSSCORE, ASFS_SCORE, or ASFSTOTAL.")
 
             csv_bytes = stats_df.to_csv(index=False).encode("utf-8")
             stem      = Path(file_name).stem
