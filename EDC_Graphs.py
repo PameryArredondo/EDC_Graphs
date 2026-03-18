@@ -2083,7 +2083,7 @@ def run_manual_entry_flow():
 # MONADERM STREAMLIT FLOW
 # ═══════════════════════════════════════════════════════════════
 
-def run_monaderm_flow():
+def run_monaderm_flow(file_bytes: bytes, file_name: str):
     # ── Persistent state keys ────────────────────────────────────────────────
     for k in ("mn_file_name", "mn_scan", "mn_rep_df",
               "mn_included_reps",   # dict (subj,zone,tp,param)->set[int]
@@ -2093,32 +2093,18 @@ def run_monaderm_flow():
         if k not in st.session_state:
             st.session_state[k] = None
 
-    # ════════════════════════════════════════════════════════════
-    # STEP 1 — Upload & configure
-    # ════════════════════════════════════════════════════════════
-    st.header("Step 1 — Upload Monaderm Workbook")
-    uploaded = st.file_uploader(
-        "Select Monaderm RAW DATA workbook (.xlsx / .xls / .xlsm)",
-        type=["xlsx", "xls", "xlsm"], key="mn_uploader",
-    )
-    if uploaded is None:
-        st.info("Upload a Monaderm workbook to begin.")
-        st.stop()
-
-    if uploaded.name != st.session_state["mn_file_name"]:
+    if file_name != st.session_state["mn_file_name"]:
         for k in ("mn_scan", "mn_rep_df", "mn_included_reps",
                   "mn_stats_df", "mn_stats_edited",
                   "mn_ecrf", "mn_param_stats", "mn_auto_dirs"):
             st.session_state[k] = None
-        st.session_state["mn_file_name"] = uploaded.name
-
-    file_bytes = uploaded.read()
+        st.session_state["mn_file_name"] = file_name
 
     # Sheet selection
-    xls          = pd.ExcelFile(io.BytesIO(file_bytes))
-    sheet_opts   = xls.sheet_names
-    auto_sheet   = _detect_monaderm_sheet(io.BytesIO(file_bytes))
-    default_idx  = sheet_opts.index(auto_sheet) if auto_sheet in sheet_opts else 0
+    xls         = pd.ExcelFile(io.BytesIO(file_bytes))
+    sheet_opts  = xls.sheet_names
+    auto_sheet  = _detect_monaderm_sheet(io.BytesIO(file_bytes))
+    default_idx = sheet_opts.index(auto_sheet) if auto_sheet in sheet_opts else 0
     if auto_sheet:
         st.success(f"RAW DATA sheet auto-detected: **{auto_sheet}**")
     raw_sheet = st.selectbox("RAW DATA sheet", sheet_opts, index=default_idx, key="mn_sheet")
@@ -2136,15 +2122,14 @@ def run_monaderm_flow():
     ]
 
     # ════════════════════════════════════════════════════════════
-    # STEP 2 — Scan & select parameters / timepoints
+    # STEP 1 — Scan & select parameters / timepoints
     # ════════════════════════════════════════════════════════════
     st.divider()
-    st.header("Step 2 — Select Parameters & Timepoints")
+    st.header("Step 1 — Select Parameters & Timepoints")
 
     if st.button("🔍 Scan File", type="secondary", key="mn_scan_btn"):
         with st.spinner("Scanning…"):
             st.session_state["mn_scan"] = _scan_monaderm_file(file_bytes, raw_sheet)
-            # Reset downstream state
             for k in ("mn_rep_df", "mn_included_reps", "mn_stats_df",
                       "mn_stats_edited", "mn_ecrf"):
                 st.session_state[k] = None
@@ -2190,7 +2175,6 @@ def run_monaderm_flow():
             st.error(err)
         else:
             st.session_state["mn_rep_df"] = rep_df
-            # Default: all reps included (None = use all)
             st.session_state["mn_included_reps"] = {}
             for k in ("mn_stats_df", "mn_stats_edited", "mn_ecrf"):
                 st.session_state[k] = None
@@ -2208,10 +2192,10 @@ def run_monaderm_flow():
     )
 
     # ════════════════════════════════════════════════════════════
-    # STEP 3 — Rep selection (per subject × zone × TP × parameter)
+    # STEP 2 — Rep selection (per subject × zone × TP × parameter)
     # ════════════════════════════════════════════════════════════
     st.divider()
-    st.header("Step 3 — Select Repetitions to Include")
+    st.header("Step 2 — Select Repetitions to Include")
     st.caption(
         "Uncheck any rep to exclude it from the average for that "
         "specific subject × zone × timepoint × parameter combination."
@@ -2240,8 +2224,6 @@ def run_monaderm_flow():
     else:
         included_reps: dict = st.session_state["mn_included_reps"] or {}
 
-        # Build display rows with a checkbox per rep
-        # We render each subject × zone block as a mini-table with toggles
         subjects_in_view = sorted(view_df["SUBJECT"].unique())
         zones_in_view    = sorted(view_df["ZONE"].unique())
 
@@ -2251,7 +2233,6 @@ def run_monaderm_flow():
                 st.markdown(f"**Zone: {zone}**")
             cols_header = st.columns([1.5] + [1] * 6)
             cols_header[0].markdown("**Subject**")
-            # Determine max rep count for headers
             max_rep = int(view_df[view_df["ZONE"] == zone]["REPETITION"].max())
             for r in range(1, max_rep + 1):
                 cols_header[r].markdown(f"**Rep {r}**")
@@ -2265,8 +2246,6 @@ def run_monaderm_flow():
 
                 key4 = (subj, zone, sel_tp_view, sel_param_view)
                 all_reps_for_key = sorted(subj_rows["REPETITION"].tolist())
-
-                # Current inclusion set (default = all reps)
                 current_set = included_reps.get(key4, set(all_reps_for_key))
 
                 cols_row = st.columns([1.5] + [1] * 6)
@@ -2277,7 +2256,7 @@ def run_monaderm_flow():
                     val_rows = subj_rows[subj_rows["REPETITION"] == r]["VALUE"]
                     val_str  = f"{val_rows.values[0]:.4f}" if len(val_rows) else "—"
                     checked  = r in current_set
-                    col_idx  = r  # 1-based matches columns offset
+                    col_idx  = r
                     if col_idx <= 5:
                         new_checked = cols_row[col_idx].checkbox(
                             val_str,
@@ -2295,23 +2274,18 @@ def run_monaderm_flow():
 
         if changed:
             st.session_state["mn_included_reps"] = included_reps
-            # Invalidate downstream
             for k in ("mn_stats_df", "mn_stats_edited", "mn_ecrf"):
                 st.session_state[k] = None
 
     # ── Subject completeness summary ─────────────────────────────────────────
-    # Flag subjects who have baseline data but are missing at any other TP.
     if "mn_dropped_subjects" not in st.session_state:
         st.session_state["mn_dropped_subjects"] = []
 
-    all_tps_in_data = sorted(rep_df["KINETIC"].unique().tolist(), key=tp_sort_key)
-
-    # Build per-subject, per-zone, per-param presence map
-    # A subject is "present" at a TP if they have at least one included rep there.
-    included_reps_state: dict = st.session_state["mn_included_reps"] or {}
+    all_tps_in_data     = sorted(rep_df["KINETIC"].unique().tolist(), key=tp_sort_key)
+    included_reps_state = st.session_state["mn_included_reps"] or {}
 
     def subject_has_data(subj, zone, tp, param) -> bool:
-        key4 = (subj, zone, tp, param)
+        key4    = (subj, zone, tp, param)
         allowed = included_reps_state.get(key4)
         grp = rep_df[
             (rep_df["SUBJECT"]   == subj) &
@@ -2325,38 +2299,12 @@ def run_monaderm_flow():
             return len(grp[grp["REPETITION"].isin(allowed)]) > 0
         return True
 
-    # Collect flagged subjects: has baseline, missing at ≥1 non-baseline TP
     flagged_info: list[dict] = []
-    all_subjects  = sorted(rep_df["SUBJECT"].unique().tolist())
-    all_zones_u   = sorted(rep_df["ZONE"].unique().tolist())
-    all_params_u  = sorted(rep_df["PARAMETER"].unique().tolist())
+    all_subjects = sorted(rep_df["SUBJECT"].unique().tolist())
+    all_zones_u  = sorted(rep_df["ZONE"].unique().tolist())
+    all_params_u = sorted(rep_df["PARAMETER"].unique().tolist())
 
     for subj in all_subjects:
-        missing_tps: list[str] = []
-        has_baseline = False
-
-        for zone in all_zones_u:
-            for param in all_params_u:
-                # Check baseline presence
-                for bl_tp in all_tps_in_data[:1]:   # first TP as proxy; refined below
-                    pass
-
-        # Simpler: check across all params/zones whether subject has BL and is missing elsewhere
-        bl_tps_present = set()
-        non_bl_missing: dict[str, set] = {}   # tp -> set of (zone, param) missing
-
-        for tp in all_tps_in_data:
-            for zone in all_zones_u:
-                for param in all_params_u:
-                    present = subject_has_data(subj, zone, tp, param)
-                    if present:
-                        bl_tps_present.add(tp)   # record TPs where subject has data
-                    else:
-                        non_bl_missing.setdefault(tp, set()).add((zone, param))
-
-        # Identify baseline TPs (will be resolved after baseline picker;
-        # for now use the first TP in sorted order as a proxy)
-        # We flag if subject has ANY data overall but is fully absent at some TP
         tps_with_any_data = {
             tp for tp in all_tps_in_data
             if any(
@@ -2368,16 +2316,12 @@ def run_monaderm_flow():
         tps_fully_absent = set(all_tps_in_data) - tps_with_any_data
 
         if tps_with_any_data and tps_fully_absent:
-            # Subject has some data but is missing at ≥1 timepoint
-            missing_labels = [TP_DISPLAY.get(t, t) for t in
-                              sorted(tps_fully_absent, key=tp_sort_key)]
             flagged_info.append({
-                "Subject":         subj,
-                "Missing at":      ", ".join(missing_labels),
-                "Has data at":     ", ".join(
-                    TP_DISPLAY.get(t, t)
-                    for t in sorted(tps_with_any_data, key=tp_sort_key)
-                ),
+                "Subject":     subj,
+                "Missing at":  ", ".join(TP_DISPLAY.get(t, t) for t in
+                               sorted(tps_fully_absent, key=tp_sort_key)),
+                "Has data at": ", ".join(TP_DISPLAY.get(t, t) for t in
+                               sorted(tps_with_any_data, key=tp_sort_key)),
             })
 
     with st.expander(
@@ -2393,21 +2337,15 @@ def run_monaderm_flow():
                 "These subjects have data at some timepoints but are completely "
                 "absent at others. You can exclude them from the analysis below."
             )
-            st.dataframe(
-                pd.DataFrame(flagged_info),
-                hide_index=True,
-                use_container_width=True,
-            )
+            st.dataframe(pd.DataFrame(flagged_info), hide_index=True,
+                         use_container_width=True)
 
             flagged_ids = [r["Subject"] for r in flagged_info]
-            prev_dropped = st.session_state["mn_dropped_subjects"]
-            # Keep only valid previous selections
-            valid_prev = [s for s in prev_dropped if s in flagged_ids]
-
+            valid_prev  = [s for s in st.session_state["mn_dropped_subjects"]
+                           if s in flagged_ids]
             dropped = st.multiselect(
                 "Select subjects to exclude from analysis",
-                options=flagged_ids,
-                default=valid_prev,
+                options=flagged_ids, default=valid_prev,
                 key="mn_drop_subjects_select",
             )
             if dropped != st.session_state["mn_dropped_subjects"]:
@@ -2415,23 +2353,21 @@ def run_monaderm_flow():
                 for k in ("mn_stats_df", "mn_stats_edited", "mn_ecrf"):
                     st.session_state[k] = None
 
-    # Baseline selection (needed before computing stats)
+    # Baseline selection
     st.divider()
-    bl_options  = all_tps_loaded
-    bl_def      = bl_options.index("BL") if "BL" in bl_options else 0
+    bl_options = all_tps_loaded
+    bl_def     = bl_options.index("BL") if "BL" in bl_options else 0
     baseline_tp = st.selectbox(
-        "Baseline timepoint",
-        bl_options,
-        index=bl_def,
+        "Baseline timepoint", bl_options, index=bl_def,
         format_func=lambda t: f"{TP_DISPLAY.get(t, t)} ({t})",
         key="mn_baseline",
     )
 
     # ════════════════════════════════════════════════════════════
-    # STEP 4 — Compute stats & show editable summary table
+    # STEP 3 — Compute stats & show editable summary table
     # ════════════════════════════════════════════════════════════
     st.divider()
-    st.header("Step 4 — Statistical Summary")
+    st.header("Step 3 — Statistical Summary")
     st.caption(
         "Review and edit any values below before generating charts. "
         "Mean values drive bar heights; % Change and significance drive pill badges and highlights."
@@ -2456,11 +2392,8 @@ def run_monaderm_flow():
         st.info("Click **⚙️ (Re)compute Statistics** after reviewing reps above.")
         st.stop()
 
-    # Editable columns — expose only the user-facing ones, keep hidden cols for logic
-    DISPLAY_COLS    = ["Assessment", "Time Point", "n",
-                       "Mean", "p-value",
-                       "Mean % Change From Baseline", "Significant"]
-    HIDDEN_COLS     = ["_tp_code", "_is_baseline", "_mean_float"]
+    DISPLAY_COLS = ["Assessment", "Time Point", "n", "Mean", "p-value",
+                    "Mean % Change From Baseline", "Significant"]
 
     display_df = stats_edited[DISPLAY_COLS].copy()
 
@@ -2483,13 +2416,11 @@ def run_monaderm_flow():
         key="mn_table_editor",
     )
 
-    # Merge edits back into the full DataFrame (preserving hidden cols)
     merged = stats_edited.copy()
     for col in DISPLAY_COLS:
         if col in edited_display.columns:
             merged[col] = edited_display[col].values
 
-    # Re-parse _mean_float from edited "Mean" so charts stay in sync
     def _parse_mean(cell) -> float:
         try:
             return float(str(cell).replace(",", "").strip())
@@ -2500,35 +2431,33 @@ def run_monaderm_flow():
 
     if not merged.equals(st.session_state["mn_stats_edited"]):
         st.session_state["mn_stats_edited"] = merged
-        st.session_state["mn_ecrf"]         = None   # invalidate chart cache
+        st.session_state["mn_ecrf"]         = None
 
-    # Download computed stats as CSV
     csv_bytes = edited_display.to_csv(index=False).encode("utf-8")
     st.download_button(
         "⬇️ Download Stats Table (CSV)",
         data=csv_bytes,
-        file_name=f"{Path(uploaded.name).stem}_monaderm_stats.csv",
+        file_name=f"{Path(file_name).stem}_monaderm_stats.csv",
         mime="text/csv",
         key="mn_csv",
     )
 
     # ════════════════════════════════════════════════════════════
-    # STEP 5 — Improvement direction, chart titles, preview
+    # STEP 4 — Improvement direction, chart titles, preview
     # ════════════════════════════════════════════════════════════
     st.divider()
-    st.header("Step 5 — Charts")
+    st.header("Step 4 — Charts")
 
-    # Build ECRFData from edited table (lazy — only when table has changed)
     if st.session_state["mn_ecrf"] is None and st.session_state["mn_stats_edited"] is not None:
         bl_display = TP_DISPLAY.get(baseline_tp, baseline_tp)
         ecrf_mn, pstats_mn, adirs_mn = _stats_df_to_ecrf_and_stats(
             st.session_state["mn_stats_edited"],
-            study_ref or Path(uploaded.name).stem,
+            study_ref or Path(file_name).stem,
             bl_display,
         )
-        st.session_state["mn_ecrf"]         = ecrf_mn
-        st.session_state["mn_param_stats"]  = pstats_mn
-        st.session_state["mn_auto_dirs"]    = adirs_mn
+        st.session_state["mn_ecrf"]        = ecrf_mn
+        st.session_state["mn_param_stats"] = pstats_mn
+        st.session_state["mn_auto_dirs"]   = adirs_mn
 
     ecrf_mn   = st.session_state["mn_ecrf"]
     pstats_mn = st.session_state["mn_param_stats"]
@@ -2540,7 +2469,20 @@ def run_monaderm_flow():
 
     keep = list(ecrf_mn.parameters.keys())
 
-    # Improvement direction
+    # Parameter renaming
+    with st.expander("Rename parameters for charts (optional)", expanded=False):
+        param_renames: dict = {}
+        for base in keep:
+            renamed = st.text_input(
+                base, value=base, key=f"mn_rename_{base}",
+                placeholder="e.g. Corneometer",
+            )
+            param_renames[base] = renamed.strip() or base
+
+    # Apply renames to chart_titles default values and ecrf display names
+    for base in keep:
+        ecrf_mn.parameters[base].display_name = param_renames[base]
+
     dir_mode = st.radio(
         "Improvement direction",
         ["Accept all auto-detected", "All same direction", "Per parameter"],
@@ -2565,18 +2507,20 @@ def run_monaderm_flow():
                 )
                 imp_dirs[base] = "lower" if "Decrease" in ch else "higher"
 
-    # Chart titles
     with st.expander("Edit chart titles (optional)", expanded=False):
         chart_titles = {}
         for base in keep:
-            ref = study_ref or Path(uploaded.name).stem
+            ref   = study_ref or Path(file_name).stem
+            label = param_renames.get(base, base)
             chart_titles[base] = st.text_input(
-                base, value=f"{ref} — {base}", key=f"mn_title_{base}"
+                base, value=f"{ref} — {label}", key=f"mn_title_{base}"
             )
     if not chart_titles:
-        chart_titles = {b: f"{(study_ref or Path(uploaded.name).stem)} — {b}" for b in keep}
+        chart_titles = {
+            b: f"{(study_ref or Path(file_name).stem)} — {param_renames.get(b, b)}"
+            for b in keep
+        }
 
-    # Preview
     preview_p = st.selectbox("Preview chart:", keep, key="mn_preview")
     if preview_p:
         active_tps_mn = sorted(
@@ -2601,15 +2545,13 @@ def run_monaderm_flow():
             st.warning("No chart data — check that at least one non-baseline timepoint has a mean.")
 
     # ════════════════════════════════════════════════════════════
-    # STEP 6 — Generate PDF
+    # STEP 5 — Generate PDF
     # ════════════════════════════════════════════════════════════
     st.divider()
-    st.header("Step 6 — Generate PDF")
+    st.header("Step 5 — Generate PDF")
     st.write(f"**{len(keep)}** parameter(s) · **{ecrf_mn.n_included}** subjects")
 
     if st.button("📄 Generate PDF", type="primary", key="mn_pdf"):
-        # Collect active TPs per param from the edited stats table
-        # (union across all params — create_parameter_chart handles missing TPs)
         all_active_tps = sorted(
             st.session_state["mn_stats_edited"]["Time Point"].unique().tolist(),
             key=lambda t: tp_sort_key(
@@ -2628,12 +2570,12 @@ def run_monaderm_flow():
         st.download_button(
             "⬇️ Download PDF",
             data=pdf_bytes,
-            file_name=f"{Path(uploaded.name).stem}_Monaderm_Charts.pdf",
+            file_name=f"{Path(file_name).stem}_Monaderm_Charts.pdf",
             mime="application/pdf",
             key="mn_pdf_dl",
         )
 
-       
+      
 def run_excel_flow(file_bytes: bytes = None, file_name: str = None):
     st.header("Step 1 — Configure")
 
