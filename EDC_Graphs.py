@@ -2730,6 +2730,7 @@ def run_excel_flow(file_bytes: bytes = None, file_name: str = None):
         st.session_state.ecrf            = ecrf
         st.session_state.all_param_stats = all_param_stats
         st.session_state.auto_dirs       = auto_dirs
+        st.session_state["ecrf_param_overrides"] = {}
         st.rerun()
 
     if st.session_state.ecrf is None:
@@ -2931,13 +2932,65 @@ def run_excel_flow(file_bytes: bytes = None, file_name: str = None):
 
         step_offset = 1
 
+    # ── Parameter reclassification ───────────────────────────────────────────
+    unknown_params = [p for p in all_param_names if classify_parameter(p) == "Unknown"]
+    if "ecrf_param_overrides" not in st.session_state:
+        st.session_state["ecrf_param_overrides"] = {}
+    overrides: dict = st.session_state["ecrf_param_overrides"]
+
+    if unknown_params:
+        with st.expander(
+            f"🔍 Reclassify {len(unknown_params)} unknown parameter(s)", expanded=False
+        ):
+            st.caption(
+                "These parameters could not be auto-classified. "
+                "Assign them to a category so they appear under the correct filter."
+            )
+            rcols = st.columns(3)
+            for i, base in enumerate(unknown_params):
+                p = ecrf.parameters[base]
+                with rcols[i % 3]:
+                    current = overrides.get(base, "Unknown")
+                    choice  = st.selectbox(
+                        f"**{base}** — {p.display_name[:30]}",
+                        options=["Unknown"] + ANALYSIS_MODES[1:],
+                        index=(["Unknown"] + ANALYSIS_MODES[1:]).index(current)
+                              if current in ["Unknown"] + ANALYSIS_MODES[1:] else 0,
+                        key=f"override_{base}",
+                    )
+                    if choice != current:
+                        overrides[base] = choice
+                        st.session_state["ecrf_param_overrides"] = overrides
+
+    def effective_classify(param_name: str) -> str:
+        return overrides.get(param_name, classify_parameter(param_name))
+
+    def effective_filter(names: list, mode: str) -> list:
+        if mode == "All Parameters":
+            return names
+        result = []
+        for p in names:
+            effective_type = effective_classify(p)
+            if mode == effective_type:
+                result.append(p)
+            elif effective_type == "Unknown":
+                # fall through to keyword-based filter for unoverridden unknowns
+                pass
+            else:
+                continue
+        # also include keyword-matched params not overridden
+        keyword_matched = filter_parameters_by_mode(
+            [p for p in names if p not in overrides], mode
+        )
+        return list(dict.fromkeys(result + [p for p in keyword_matched if p not in result]))
+
     st.divider()
     st.header(f"Step {4 + step_offset} — Parameters")
 
     all_param_names = list(ecrf.parameters.keys())
     mode_counts     = defaultdict(int)
     for p in all_param_names:
-        mode_counts[classify_parameter(p)] += 1
+        mode_counts[effective_classify(p)] += 1
     dominant_mode    = max(mode_counts, key=mode_counts.get) if mode_counts else "All Parameters"
     default_mode_idx = ANALYSIS_MODES.index(dominant_mode) \
                        if dominant_mode in ANALYSIS_MODES else 0
@@ -2947,7 +3000,7 @@ def run_excel_flow(file_bytes: bytes = None, file_name: str = None):
 
     is_expert = "Expert" in analysis_mode
 
-    filtered_names = filter_parameters_by_mode(all_param_names, analysis_mode)
+    filtered_names = effective_filter(all_param_names, analysis_mode)
     if analysis_mode != "All Parameters":
         n_hidden = len(all_param_names) - len(filtered_names)
         if n_hidden:
@@ -2966,14 +3019,14 @@ def run_excel_flow(file_bytes: bytes = None, file_name: str = None):
         row = {
             "Variable Name": base + (" ★" if base in orphan_assignments else ""),
             "Display Name": p.display_name[:50],
-            "Type":         classify_parameter(base),
+            "Type":         effective_classify(base),
             "Auto Dir":     "Decrease = Improvement"
                             if auto_dirs.get(base, "lower") == "lower"
                             else "Increase = Improvement",
         }
         for tp in all_tps_for_param:
             tp_mean = s.get(tp, {}).get('mean')
-            row[TP_DISPLAY.get(tp, tp)] = f"{tp_mean:.2f}" if tp_mean is not None else "—"
+            row[f"{TP_DISPLAY.get(tp, tp)} Mean"] = f"{tp_mean:.2f}" if tp_mean is not None else "—"
         if any_rep_params:
             row["Reps"] = f"{len(next(iter(p.rep_columns.values()), []))} reps averaged" \
                           if p.is_rep_param() else ""
@@ -2992,58 +3045,65 @@ def run_excel_flow(file_bytes: bytes = None, file_name: str = None):
             hide_index=True, use_container_width=True)
 
     st.divider()
-    st.header(f"Step {5 + step_offset} — Improvement Direction")
+    st.header(f"Step {5 + step_offset} — Charts")
 
-    dir_mode = st.radio(
-        "How would you like to set improvement direction?",
-        options=["Accept all auto-detected directions",
-                 "Set ALL parameters to the same direction",
-                 "Set each parameter individually"],
-        horizontal=True,
-    )
-    improvement_dirs: dict = {}
-    if dir_mode == "Accept all auto-detected directions":
-        improvement_dirs = {k: v for k, v in auto_dirs.items() if k in keep}
-        st.caption("Using auto-detected directions.")
-    elif dir_mode == "Set ALL parameters to the same direction":
-        unified   = st.radio("Direction:", ["Lower = Improvement", "Higher = Improvement"],
-                             horizontal=True)
-        direction = "lower" if "Lower" in unified else "higher"
-        improvement_dirs = {k: direction for k in keep}
-    else:
-        cols = st.columns(3)
+    with st.expander("⚙️ Chart Settings", expanded=False):
+        n_cols = min(len(keep), 3)
+
+        st.markdown("**Improvement direction**")
+        dir_mode = st.radio(
+            "Direction",
+            options=["Accept all auto-detected directions",
+                     "Set ALL parameters to the same direction",
+                     "Set each parameter individually"],
+            horizontal=True,
+            key="ecrf_dir_mode",
+            label_visibility="collapsed",
+        )
+        improvement_dirs: dict = {}
+        if dir_mode == "Accept all auto-detected directions":
+            improvement_dirs = {k: v for k, v in auto_dirs.items() if k in keep}
+        elif dir_mode == "Set ALL parameters to the same direction":
+            unified   = st.radio("Direction:", ["Lower = Improvement", "Higher = Improvement"],
+                                 horizontal=True, key="ecrf_unified_dir")
+            direction = "lower" if "Lower" in unified else "higher"
+            improvement_dirs = {k: direction for k in keep}
+        else:
+            dcols = st.columns(n_cols)
+            for i, base in enumerate(keep):
+                p = ecrf.parameters[base]
+                with dcols[i % n_cols]:
+                    choice = st.radio(
+                        f"**{base}** — {p.display_name[:30]}",
+                        options=["Lower = Improvement", "Higher = Improvement"],
+                        index=0 if auto_dirs.get(base, "lower") == "lower" else 1,
+                        key=f"dir_{base}",
+                    )
+                    improvement_dirs[base] = "lower" if "Lower" in choice else "higher"
+
+        st.markdown("**Chart titles**")
+        chart_titles: dict = {}
+        tcols = st.columns(n_cols)
         for i, base in enumerate(keep):
             p = ecrf.parameters[base]
-            with cols[i % 3]:
-                choice = st.radio(
-                    f"**{base}** — {p.display_name[:30]}",
-                    options=["Lower = Improvement", "Higher = Improvement"],
-                    index=0 if auto_dirs.get(base, "lower") == "lower" else 1,
-                    key=f"dir_{base}",
+            with tcols[i % n_cols]:
+                deflt = f"{ecrf.study_ref}: {analysis_mode} — {p.display_name}"
+                chart_titles[base] = st.text_input(
+                    base, value=deflt, key=f"title_{base}"
                 )
-                improvement_dirs[base] = "lower" if "Decrease" in choice else "higher"
 
-    st.divider()
-    st.header(f"Step {6 + step_offset} — Chart Titles")
-    with st.expander("Edit chart titles (click to expand)", expanded=False):
-        chart_titles: dict = {}
-        for base in keep:
-            p     = ecrf.parameters[base]
-            deflt = f"{ecrf.study_ref}: {analysis_mode} — {p.display_name}"
-            chart_titles[base] = st.text_input(f"{base}", value=deflt,
-                                                key=f"title_{base}")
     if not chart_titles:
         chart_titles = {
             base: f"{ecrf.study_ref}: {analysis_mode} — "
                   f"{ecrf.parameters[base].display_name}"
             for base in keep
         }
+    if not improvement_dirs:
+        improvement_dirs = {k: v for k, v in auto_dirs.items() if k in keep}
 
-    st.divider()
-    st.header(f"Step {7 + step_offset} — Preview")
     if keep:
         preview_param = st.selectbox(
-            "Preview chart for parameter:", options=keep,
+            "Preview chart:", options=keep,
             format_func=lambda b: f"{b} — {ecrf.parameters[b].display_name[:50]}")
         if preview_param:
             fig = create_parameter_chart(
@@ -3061,7 +3121,7 @@ def run_excel_flow(file_bytes: bytes = None, file_name: str = None):
         st.warning("No parameters selected.")
 
     st.divider()
-    st.header(f"Step {8 + step_offset} — Data Quality")
+    st.header(f"Step {6 + step_offset} — Data Quality")
 
     if keep and active_tps:
         dq_issues   = scan_data_quality(ecrf, keep, active_tps)
@@ -3089,7 +3149,7 @@ def run_excel_flow(file_bytes: bytes = None, file_name: str = None):
         st.info("Select parameters and timepoints above to run the data quality scan.")
 
     st.divider()
-    st.header(f"Step {9 + step_offset} — Statistical Summary")
+    st.header(f"Step {7 + step_offset} — Statistical Summary")
     st.caption("Review stats before generating the PDF. "
                "Verify % change direction and p-values are as expected.")
 
@@ -3142,7 +3202,7 @@ def run_excel_flow(file_bytes: bytes = None, file_name: str = None):
         st.info("Select parameters and timepoints above to generate the stats table.")
 
     st.divider()
-    st.header(f"Step {10 + step_offset} — Generate PDF")
+    st.header(f"Step {8 + step_offset} — Generate PDF")
     st.write(f"**{len(keep)}** parameter(s) · "
              f"**{len(active_tps)}** timepoint(s) · "
              f"**{ecrf.n_included}** included subject(s)")
