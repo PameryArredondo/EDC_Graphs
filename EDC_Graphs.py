@@ -2680,7 +2680,7 @@ def run_excel_flow(file_bytes: bytes = None, file_name: str = None):
     st.header("Step 1 — Configure")
 
     if file_name != st.session_state.uploaded_file_name:
-        for k in ("ecrf", "all_param_stats", "auto_dirs", "ecrf_tp_order"):
+        for k in ("ecrf", "all_param_stats", "auto_dirs", "ecrf_tp_order", "ecrf_selected_tps"):
             st.session_state[k] = None
         st.session_state.uploaded_file_name = file_name
 
@@ -2732,6 +2732,7 @@ def run_excel_flow(file_bytes: bytes = None, file_name: str = None):
         st.session_state.auto_dirs       = auto_dirs
         st.session_state["ecrf_param_overrides"] = {}
         st.session_state["ecrf_tp_order"]        = None
+        st.session_state["ecrf_selected_tps"]    = None
         st.rerun()
 
     if st.session_state.ecrf is None:
@@ -2774,15 +2775,30 @@ def run_excel_flow(file_bytes: bytes = None, file_name: str = None):
     mapped_tps = [t for t in all_tps if t.upper() in {x.upper() for x in KNOWN_TP_ORDER}]
     unmapped   = ecrf.unmapped_tps
 
-    active_tps: list = st.multiselect(
+    # Persist multiselect default so it survives reruns
+    if st.session_state.get("ecrf_selected_tps") is None or \
+            not set(st.session_state["ecrf_selected_tps"]).issubset(set(all_tps)):
+        st.session_state["ecrf_selected_tps"] = mapped_tps
+
+    selected_tps: list = st.multiselect(
         f"Select timepoints to include ({len(all_tps)} detected)",
         options=all_tps,
-        default=mapped_tps,
+        default=st.session_state["ecrf_selected_tps"],
         format_func=lambda t: f"{TP_DISPLAY.get(t, t)} ({t})"
                               + (" ⚠ unmapped" if t in unmapped else ""),
         help="Unmapped timepoints (marked ⚠) were found in the data but are not "
              "in the standard timepoint list.",
+        key="ecrf_tp_multiselect",
     )
+    st.session_state["ecrf_selected_tps"] = selected_tps
+
+    # Reset saved order when selection changes
+    saved_order = st.session_state.get("ecrf_tp_order")
+    if saved_order and set(saved_order) != set(selected_tps):
+        st.session_state["ecrf_tp_order"] = None
+        saved_order = None
+
+    active_tps: list = saved_order if saved_order else selected_tps
 
     if unmapped:
         with st.expander(
@@ -2808,15 +2824,14 @@ def run_excel_flow(file_bytes: bytes = None, file_name: str = None):
     st.caption("Active timepoints: "
                + " → ".join(TP_DISPLAY.get(t, t) for t in active_tps))
 
-    with st.expander("🔀 Reorder timepoints (drag to fix order)", expanded=False):
+    with st.expander("🔀 Reorder timepoints (drag to fix order)", expanded=True):
         display_labels = [f"{TP_DISPLAY.get(t, t)} ({t})" for t in active_tps]
         sorted_labels  = sort_items(display_labels, direction="vertical")
         sorted_tps     = [active_tps[display_labels.index(l)] for l in sorted_labels]
         if sorted_tps != active_tps:
             st.session_state["ecrf_tp_order"] = sorted_tps
-        if st.session_state.get("ecrf_tp_order") and \
-                set(st.session_state["ecrf_tp_order"]) == set(active_tps):
-            active_tps = st.session_state["ecrf_tp_order"]
+            active_tps = sorted_tps
+        if st.session_state.get("ecrf_tp_order"):
             st.caption("Custom order applied: "
                        + " → ".join(TP_DISPLAY.get(t, t) for t in active_tps))
 
