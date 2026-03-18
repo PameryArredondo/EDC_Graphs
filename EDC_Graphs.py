@@ -325,7 +325,7 @@ def tp_sort_key(tp):
 # 4. DATA STRUCTURES
 # ═══════════════════════════════════════════════════════════════
 
-_MEAS_REP_PAT = re.compile(r'measur?ement\s+\d+', re.IGNORECASE)
+_MEAS_REP_PAT = re.compile(r'measur?e?ment\s+\d+', re.IGNORECASE)
 
 def _is_measurement_rep(q_text: str) -> bool:
     """True if the question text indicates a repeated measurement (Measurement 1/2/3)."""
@@ -2671,7 +2671,7 @@ def run_monaderm_flow(file_bytes: bytes, file_name: str):
                 mime="application/pdf",
                 key="mn_pdf_dl",
             )
-    
+
 def run_excel_flow(file_bytes: bytes = None, file_name: str = None):
     st.header("Step 1 — Configure")
 
@@ -2692,6 +2692,12 @@ def run_excel_flow(file_bytes: bytes = None, file_name: str = None):
 
     ov_sheet      = find_option_values_sheet(io.BytesIO(file_bytes), ecrf_sheet)
     ov_basenames: set = set()
+    if ov_sheet:
+        st.success(f"Option Values sheet detected: **{ov_sheet}** — "
+                   "Excluded subjects in the status column excluded automatically.")
+        ov_basenames = load_ov_variable_basenames(io.BytesIO(file_bytes), ov_sheet)
+    else:
+        st.warning("No Option Values sheet found. Relying on built-in exclusion list.")
 
     excl_raw = st.text_input("Manually exclude Subject IDs (comma-separated, optional)",
                               placeholder="e.g. 0012, 0034")
@@ -2730,10 +2736,11 @@ def run_excel_flow(file_bytes: bytes = None, file_name: str = None):
     auto_dirs: dict              = st.session_state.auto_dirs
 
     # ── Quick summary metrics in Step 1 ──────────────────────────────────────
-    m1, m2, m3 = st.columns(3)
-    m1.metric("Study",             ecrf.study_ref or "—")
-    m2.metric("Included Subjects", ecrf.n_included)
-    m3.metric("Excluded Subjects", len(ecrf.excluded_subjects))
+    st.markdown(
+        f"**Study:** {ecrf.study_ref or '—'} &nbsp;·&nbsp; "
+        f"**Included:** {ecrf.n_included} &nbsp;·&nbsp; "
+        f"**Excluded:** {len(ecrf.excluded_subjects)}"
+    )
 
     st.divider()
     st.header("Step 2 — Subject Summary")
@@ -2790,17 +2797,7 @@ def run_excel_flow(file_bytes: bytes = None, file_name: str = None):
         st.warning("No timepoints selected — select at least one to continue.")
         st.stop()
 
-    bl_options = list(active_tps)
-    bl_default = bl_options.index(ecrf.baseline_prefix) \
-                 if ecrf.baseline_prefix in bl_options else 0
-    baseline_tp = st.selectbox(
-        "Baseline timepoint",
-        options=bl_options,
-        index=bl_default,
-        format_func=lambda t: f"{TP_DISPLAY.get(t, t)} ({t})",
-        help="All % change calculations are relative to this timepoint.",
-    )
-    ecrf.baseline_prefix = baseline_tp
+    ecrf.baseline_prefix = active_tps[0]
 
     st.caption("Active timepoints: "
                + " → ".join(TP_DISPLAY.get(t, t) for t in active_tps))
