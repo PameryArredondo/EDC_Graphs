@@ -478,7 +478,7 @@ def normalize_subject_id(raw: str) -> str:
 
 
 # ═══════════════════════════════════════════════════════════════
-# 8. EDC DATA PARSING
+# 8. Ecrf DATA PARSING
 # ═══════════════════════════════════════════════════════════════
 
 def parse_ecrf_data(excel_file, ecrf_sheet, ov_exclusion_basenames,
@@ -612,6 +612,290 @@ def parse_ecrf_data(excel_file, ecrf_sheet, ov_exclusion_basenames,
 
     return ecrf, None
 
+#SECTION 8b — MONADERM HELPERS & PARSER
+# ═══════════════════════════════════════════════════════════════
+
+MONADERM_REQUIRED_COLS = {"SUBJECT", "KINETIC", "PARAMETER", "VALUE", "REPETITION"}
+
+
+def _detect_monaderm_sheet(excel_file) -> str | None:
+    """Return the first sheet that looks like a Monaderm RAW DATA sheet."""
+    xls = pd.ExcelFile(excel_file)
+    for sn in xls.sheet_names:
+        sn_l = sn.lower()
+        if "raw" in sn_l and "data" in sn_l:
+            return sn
+        if sn_l == "rawdata":
+            return sn
+    for sn in xls.sheet_names:
+        try:
+            peek = pd.read_excel(excel_file, sheet_name=sn, nrows=1)
+            cols = {str(c).strip().upper() for c in peek.columns}
+            if MONADERM_REQUIRED_COLS.issubset(cols):
+                return sn
+        except Exception:
+            pass
+    return None
+
+
+def _scan_monaderm_file(file_bytes: bytes, sheet_name: str) -> dict:
+    """Quick dimension discovery — no averaging."""
+    try:
+        df = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_name, header=0)
+    except Exception as exc:
+        return {"error": str(exc), "params": [], "tps": [], "zones": [], "probe_names": []}
+
+    df.columns = [str(c).strip().upper() for c in df.columns]
+    missing = MONADERM_REQUIRED_COLS - set(df.columns)
+    if missing:
+        return {"error": f"Missing column(s): {', '.join(sorted(missing))}",
+                "params": [], "tps": [], "zones": [], "probe_names": []}
+
+    params      = sorted(df["PARAMETER"].dropna().astype(str).str.strip().unique().tolist())
+    tps_raw     = df["KINETIC"].dropna().astype(str).str.strip().str.upper().unique().tolist()
+    tps         = sorted(tps_raw, key=tp_sort_key)
+    zones       = (sorted(df["ZONE"].dropna().astype(str).str.strip().unique().tolist())
+                   if "ZONE" in df.columns else ["S1"])
+    probe_names = (sorted(df["PROBE_NAME"].dropna().astype(str).str.strip().unique().tolist())
+                   if "PROBE_NAME" in df.columns else [])
+    return {"error": None, "params": params, "tps": tps,
+            "zones": zones, "probe_names": probe_names}
+
+
+def _load_rep_df(
+    file_bytes: bytes,
+    sheet_name: str,
+    selected_params: list[str],
+    selected_tps: list[str],
+    global_exclusions: list[str] | None = None,
+) -> tuple[pd.DataFrame | None, str | None]:
+    """
+    Load the RAW DATA sheet and return a clean rep-level DataFrame:
+        SUBJECT | ZONE | KINETIC | PARAMETER | REPETITION | VALUE
+    One row per raw measurement — no averaging yet.
+    """
+    try:
+        df = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_name, header=0)
+    except Exception as exc:
+        return None, str(exc)
+
+    df.columns = [str(c).strip().upper() for c in df.columns]
+    missing = MONADERM_REQUIRED_COLS - set(df.columns)
+    if missing:
+        return None, f"Missing column(s): {', '.join(sorted(missing))}"
+
+    df["SUBJECT"]    = df["SUBJECT"].astype(str).str.strip().apply(normalize_subject_id)
+    df["KINETIC"]    = df["KINETIC"].astype(str).str.strip().str.upper()
+    df["PARAMETER"]  = df["PARAMETER"].astype(str).str.strip()
+    df["REPETITION"] = pd.to_numeric(df["REPETITION"], errors="coerce").fillna(0).astype(int)
+    df["VALUE"]      = pd.to_numeric(df["VALUE"], errors="coerce")
+    df["ZONE"]       = df["ZONE"].astype(str).str.strip() if "ZONE" in df.columns else "S1"
+
+    df = df.dropna(subset=["VALUE"])
+    if global_exclusions:
+        df = df[~df["SUBJECT"].isin(set(global_exclusions))]
+    df = df[df["PARAMETER"].isin(selected_params) & df["KINETIC"].isin(selected_tps)]
+    if df.empty:
+        return None, "No data remains after filtering."
+
+    return df[["SUBJECT", "ZONE", "KINETIC", "PARAMETER", "REPETITION", "VALUE"]], None
+
+
+def _compute_stats_from_rep_df(
+    rep_df: pd.DataFrame,
+    included_reps: dict,          # {(subj, zone, tp, param): set[int]}
+    baseline_tp: str,
+) -> pd.DataFrame:
+    """
+    Given the rep-level DataFrame and a dict of which reps to include,
+    compute per-group means, then build a stats summary matching the
+    format produced by build_stats_table():
+
+        Assessment | Time Point | n | Mean ± SD | p-value | Mean % Change From Baseline
+
+    p-values are paired t-tests vs baseline (same as compute_parameter_stats path).
+    """
+    from scipy import stats as scipy_stats
+
+    # ── Step 1: compute per-group means from selected reps ───────────────────
+    records = []
+    for (subj, zone, tp, param), grp in rep_df.groupby(
+        ["SUBJECT", "ZONE", "KINETIC", "PARAMETER"]
+    ):
+        key     = (subj, zone, tp, param)
+        allowed = included_reps.get(key)
+        if allowed is not None:
+            vals = grp[grp["REPETITION"].isin(allowed)]["VALUE"].values
+        else:
+            vals = grp["VALUE"].values
+        if len(vals) == 0:
+            continue
+        records.append({
+            "SUBJECT": subj, "ZONE": zone, "KINETIC": tp,
+            "PARAMETER": param,
+            "MEAN": float(np.mean(vals)),
+            "N_REPS": len(vals),
+        })
+
+    if not records:
+        return pd.DataFrame()
+
+    df_means = pd.DataFrame(records)
+
+    # ── Step 2: build summary rows ────────────────────────────────────────────
+    unique_zones   = sorted(df_means["ZONE"].unique())
+    unique_params  = sorted(df_means["PARAMETER"].unique())
+    active_tps     = sorted(df_means["KINETIC"].unique(), key=tp_sort_key)
+
+    summary_rows = []
+
+    for zone in unique_zones:
+        for param in unique_params:
+            param_label = f"{param} — {zone}" if len(unique_zones) > 1 else param
+            df_pp = df_means[(df_means["ZONE"] == zone) & (df_means["PARAMETER"] == param)]
+
+            # baseline subject means
+            bl_df   = df_pp[df_pp["KINETIC"] == baseline_tp]
+            bl_map  = dict(zip(bl_df["SUBJECT"], bl_df["MEAN"]))
+            bl_vals = np.array(list(bl_map.values()))
+            bl_mean = float(np.mean(bl_vals)) if len(bl_vals) > 0 else None
+
+            for tp in active_tps:
+                tp_df   = df_pp[df_pp["KINETIC"] == tp]
+                tp_map  = dict(zip(tp_df["SUBJECT"], tp_df["MEAN"]))
+                tp_vals = np.array(list(tp_map.values()))
+
+                if len(tp_vals) == 0:
+                    continue
+
+                mean_val = float(np.mean(tp_vals))
+                n        = len(tp_vals)
+                is_bl    = (tp == baseline_tp)
+
+                # paired t-test vs baseline on matched subjects
+                pval_str = ""
+                sig_flag = ""
+                if not is_bl and bl_mean is not None:
+                    common   = sorted(set(bl_map) & set(tp_map))
+                    if len(common) >= 2:
+                        bl_paired = np.array([bl_map[s] for s in common])
+                        tp_paired = np.array([tp_map[s] for s in common])
+                        if np.std(bl_paired - tp_paired) > 0:
+                            _, pv = scipy_stats.ttest_rel(bl_paired, tp_paired)
+                            pval_str = f"{pv:.3f}" + ("*" if pv < 0.05 else "")
+                            sig_flag = "Significant" if pv < 0.05 else "Not significant"
+                        else:
+                            pval_str = "1.000"
+                            sig_flag = "Not significant"
+                    else:
+                        pval_str = "—"
+                        sig_flag = "—"
+
+                pct_str = ""
+                if not is_bl and bl_mean is not None and bl_mean != 0:
+                    pct = ((mean_val - bl_mean) / bl_mean) * 100
+                    pct_str = f"{round_half_up(pct, 2):.2f}%"
+                elif not is_bl:
+                    pct_str = "N/A"
+
+                summary_rows.append({
+                    "Assessment":                  param_label,
+                    "Time Point":                  TP_DISPLAY.get(tp, tp),
+                    "_tp_code":                    tp,          # hidden sort key
+                    "_is_baseline":                is_bl,
+                    "n":                           n,
+                    "Mean":        fmt_value(mean_val),
+                    "_mean_float": mean_val,    # for chart injection
+                    "p-value":                     pval_str,
+                    "Mean % Change From Baseline": pct_str,
+                    "Significant":                 sig_flag,
+                })
+
+    return pd.DataFrame(summary_rows)
+
+
+def _stats_df_to_ecrf_and_stats(
+    stats_df: pd.DataFrame,
+    study_ref: str,
+    baseline_tp_display: str,
+) -> tuple["ECRFData", dict, dict]:
+    """
+    Convert an edited stats summary DataFrame back into ECRFData + param_stats
+    so create_parameter_chart / generate_pdf_bytes work unchanged.
+
+    Uses the same pattern as _manual_df_to_ecrf_and_stats() in the Manual
+    Entry flow — charts are driven by the Mean values in the table.
+    """
+    ecrf                 = ECRFData()
+    ecrf.study_ref       = study_ref
+    ecrf.df              = pd.DataFrame()
+    ecrf.baseline_prefix = baseline_tp_display   # display name used as key
+
+    # Rebuild a timepoint order from the table
+    tp_order = []
+    seen: set = set()
+    for tp in stats_df["Time Point"]:
+        if tp not in seen:
+            tp_order.append(tp)
+            seen.add(tp)
+    # Sort by known order where possible
+    ecrf.timepoint_order = sorted(tp_order, key=lambda t: tp_sort_key(
+        next((k for k, v in TP_DISPLAY.items() if v == t), t)
+    ))
+
+    all_param_stats: dict = {}
+    auto_dirs: dict       = {}
+
+    for param_name, grp in stats_df.groupby("Assessment", sort=False):
+        pi       = ParameterInfo(param_name, param_name)
+        stat_dict = OrderedDict()
+        bl_mean  = None
+
+        for _, row in grp.iterrows():
+            tp       = row["Time Point"]
+            mean_val = row["_mean_float"]
+            n_val    = int(row["n"]) if str(row["n"]).isdigit() else 0
+            is_bl    = row["_is_baseline"]
+
+            if is_bl:
+                bl_mean = mean_val
+
+            pct_val  = None
+            if not is_bl and bl_mean is not None and bl_mean != 0:
+                pct_raw = row["Mean % Change From Baseline"].replace("%", "").strip()
+                try:
+                    pct_val = float(pct_raw)
+                except (ValueError, AttributeError):
+                    pct_val = ((mean_val - bl_mean) / bl_mean) * 100 if bl_mean else None
+
+            sig_str  = str(row.get("Significant", ""))
+            sig_flag = "significant" in sig_str.lower() and "*" in str(row.get("p-value", ""))
+
+            stat_dict[tp] = {
+                "mean":        mean_val,
+                "std":         0.0,
+                "n":           n_val,
+                "pct_change":  pct_val,
+                "values":      np.array([mean_val]),
+                "significant": sig_flag,
+            }
+            pi.tp_columns[tp] = f"__mn__{tp}"
+
+        ecrf.parameters[param_name] = pi
+        all_param_stats[param_name] = stat_dict
+
+        non_bl = [(tp, s) for tp, s in stat_dict.items() if not stats_df[
+            (stats_df["Assessment"] == param_name) &
+            (stats_df["Time Point"] == tp)]["_is_baseline"].any()]
+        if non_bl and bl_mean is not None:
+            auto_dirs[param_name] = (
+                "lower" if non_bl[-1][1]["mean"] <= bl_mean else "higher"
+            )
+        else:
+            auto_dirs[param_name] = "lower"
+
+    ecrf.n_included = int(stats_df["n"].max()) if not stats_df.empty else 0
+    return ecrf, all_param_stats, auto_dirs
 
 # ═══════════════════════════════════════════════════════════════
 # 9. HELPERS
@@ -1782,7 +2066,443 @@ def run_manual_entry_flow():
             file_name=f"{study_ref.replace(' ', '_')}_manual_charts.pdf",
             mime="application/pdf",
         )
-        
+# ═══════════════════════════════════════════════════════════════
+# MONADERM STREAMLIT FLOW
+# ═══════════════════════════════════════════════════════════════
+
+def run_monaderm_flow():
+    # ── Persistent state keys ────────────────────────────────────────────────
+    for k in ("mn_file_name", "mn_scan", "mn_rep_df",
+              "mn_included_reps",   # dict (subj,zone,tp,param)->set[int]
+              "mn_stats_df",        # computed stats (pre-edit)
+              "mn_stats_edited",    # user-edited stats df (drives charts)
+              "mn_ecrf", "mn_param_stats", "mn_auto_dirs"):
+        if k not in st.session_state:
+            st.session_state[k] = None
+
+    # ════════════════════════════════════════════════════════════
+    # STEP 1 — Upload & configure
+    # ════════════════════════════════════════════════════════════
+    st.header("Step 1 — Upload Monaderm Workbook")
+    uploaded = st.file_uploader(
+        "Select Monaderm RAW DATA workbook (.xlsx / .xls / .xlsm)",
+        type=["xlsx", "xls", "xlsm"], key="mn_uploader",
+    )
+    if uploaded is None:
+        st.info("Upload a Monaderm workbook to begin.")
+        st.stop()
+
+    if uploaded.name != st.session_state["mn_file_name"]:
+        for k in ("mn_scan", "mn_rep_df", "mn_included_reps",
+                  "mn_stats_df", "mn_stats_edited",
+                  "mn_ecrf", "mn_param_stats", "mn_auto_dirs"):
+            st.session_state[k] = None
+        st.session_state["mn_file_name"] = uploaded.name
+
+    file_bytes = uploaded.read()
+
+    # Sheet selection
+    xls          = pd.ExcelFile(io.BytesIO(file_bytes))
+    sheet_opts   = xls.sheet_names
+    auto_sheet   = _detect_monaderm_sheet(io.BytesIO(file_bytes))
+    default_idx  = sheet_opts.index(auto_sheet) if auto_sheet in sheet_opts else 0
+    if auto_sheet:
+        st.success(f"RAW DATA sheet auto-detected: **{auto_sheet}**")
+    raw_sheet = st.selectbox("RAW DATA sheet", sheet_opts, index=default_idx, key="mn_sheet")
+
+    # Study reference & options
+    col_a, col_b = st.columns(2)
+    study_ref   = col_a.text_input("Study reference", placeholder="e.g. CS251008", key="mn_ref")
+    show_center = col_b.checkbox("Show center on charts", value=False, key="mn_center")
+
+    excl_raw = st.text_input("Exclude Subject IDs (comma-separated, optional)",
+                              placeholder="e.g. 0012, 0034", key="mn_excl")
+    global_excl = [
+        (f"{int(e):04d}" if e.isdigit() else e)
+        for e in (x.strip() for x in excl_raw.split(",")) if e
+    ]
+
+    # ════════════════════════════════════════════════════════════
+    # STEP 2 — Scan & select parameters / timepoints
+    # ════════════════════════════════════════════════════════════
+    st.divider()
+    st.header("Step 2 — Select Parameters & Timepoints")
+
+    if st.button("🔍 Scan File", type="secondary", key="mn_scan_btn"):
+        with st.spinner("Scanning…"):
+            st.session_state["mn_scan"] = _scan_monaderm_file(file_bytes, raw_sheet)
+            # Reset downstream state
+            for k in ("mn_rep_df", "mn_included_reps", "mn_stats_df",
+                      "mn_stats_edited", "mn_ecrf"):
+                st.session_state[k] = None
+
+    scan: dict | None = st.session_state["mn_scan"]
+
+    if scan:
+        if scan["error"]:
+            st.error(scan["error"])
+            st.stop()
+        if scan["probe_names"]:
+            st.caption("Probe(s): " + ", ".join(scan["probe_names"]))
+        if scan["zones"] not in ([], ["S1"]):
+            st.caption("Zone(s): " + ", ".join(scan["zones"]))
+
+        sel_params = st.multiselect(
+            f"Parameters ({len(scan['params'])} found)",
+            scan["params"], default=scan["params"], key="mn_sel_params",
+        )
+        mapped_tps = [t for t in scan["tps"]
+                      if t.upper() in {x.upper() for x in KNOWN_TP_ORDER}]
+        sel_tps = st.multiselect(
+            f"Timepoints ({len(scan['tps'])} found)",
+            scan["tps"],
+            default=mapped_tps or scan["tps"],
+            format_func=lambda t: f"{TP_DISPLAY.get(t, t)} ({t})",
+            key="mn_sel_tps",
+        )
+    else:
+        st.info("Click **Scan File** to load available parameters and timepoints.")
+        sel_params, sel_tps = [], []
+
+    # Load rep-level data
+    load_disabled = not (scan and not scan["error"] and sel_params and sel_tps)
+    if st.button("📥 Load Data", type="primary",
+                 disabled=load_disabled, key="mn_load"):
+        with st.spinner("Loading rep-level data…"):
+            rep_df, err = _load_rep_df(
+                file_bytes, raw_sheet, sel_params, sel_tps,
+                global_excl or None,
+            )
+        if err:
+            st.error(err)
+        else:
+            st.session_state["mn_rep_df"] = rep_df
+            # Default: all reps included (None = use all)
+            st.session_state["mn_included_reps"] = {}
+            for k in ("mn_stats_df", "mn_stats_edited", "mn_ecrf"):
+                st.session_state[k] = None
+            st.rerun()
+
+    rep_df: pd.DataFrame | None = st.session_state["mn_rep_df"]
+    if rep_df is None:
+        st.stop()
+
+    st.success(
+        f"Loaded **{len(rep_df)}** raw measurements · "
+        f"**{rep_df['SUBJECT'].nunique()}** subjects · "
+        f"**{rep_df['PARAMETER'].nunique()}** parameter(s) · "
+        f"**{rep_df['KINETIC'].nunique()}** timepoint(s)"
+    )
+
+    # ════════════════════════════════════════════════════════════
+    # STEP 3 — Rep selection (per subject × zone × TP × parameter)
+    # ════════════════════════════════════════════════════════════
+    st.divider()
+    st.header("Step 3 — Select Repetitions to Include")
+    st.caption(
+        "Uncheck any rep to exclude it from the average for that "
+        "specific subject × zone × timepoint × parameter combination."
+    )
+
+    all_params_loaded = sorted(rep_df["PARAMETER"].unique().tolist())
+    all_tps_loaded    = sorted(rep_df["KINETIC"].unique().tolist(), key=tp_sort_key)
+
+    sel_param_view = st.selectbox(
+        "Parameter to review", all_params_loaded, key="mn_param_view"
+    )
+    sel_tp_view = st.selectbox(
+        "Timepoint to review",
+        all_tps_loaded,
+        format_func=lambda t: f"{TP_DISPLAY.get(t, t)} ({t})",
+        key="mn_tp_view",
+    )
+
+    view_df = rep_df[
+        (rep_df["PARAMETER"] == sel_param_view) &
+        (rep_df["KINETIC"]   == sel_tp_view)
+    ].sort_values(["SUBJECT", "ZONE", "REPETITION"])
+
+    if view_df.empty:
+        st.info("No data for this parameter × timepoint combination.")
+    else:
+        included_reps: dict = st.session_state["mn_included_reps"] or {}
+
+        # Build display rows with a checkbox per rep
+        # We render each subject × zone block as a mini-table with toggles
+        subjects_in_view = sorted(view_df["SUBJECT"].unique())
+        zones_in_view    = sorted(view_df["ZONE"].unique())
+
+        changed = False
+        for zone in zones_in_view:
+            if len(zones_in_view) > 1:
+                st.markdown(f"**Zone: {zone}**")
+            cols_header = st.columns([1.5] + [1] * 6)
+            cols_header[0].markdown("**Subject**")
+            # Determine max rep count for headers
+            max_rep = int(view_df[view_df["ZONE"] == zone]["REPETITION"].max())
+            for r in range(1, max_rep + 1):
+                cols_header[r].markdown(f"**Rep {r}**")
+
+            for subj in subjects_in_view:
+                subj_rows = view_df[
+                    (view_df["SUBJECT"] == subj) & (view_df["ZONE"] == zone)
+                ]
+                if subj_rows.empty:
+                    continue
+
+                key4 = (subj, zone, sel_tp_view, sel_param_view)
+                all_reps_for_key = sorted(subj_rows["REPETITION"].tolist())
+
+                # Current inclusion set (default = all reps)
+                current_set = included_reps.get(key4, set(all_reps_for_key))
+
+                cols_row = st.columns([1.5] + [1] * 6)
+                cols_row[0].write(subj)
+
+                new_set = set()
+                for r in all_reps_for_key:
+                    val_rows = subj_rows[subj_rows["REPETITION"] == r]["VALUE"]
+                    val_str  = f"{val_rows.values[0]:.4f}" if len(val_rows) else "—"
+                    checked  = r in current_set
+                    col_idx  = r  # 1-based matches columns offset
+                    if col_idx <= 5:
+                        new_checked = cols_row[col_idx].checkbox(
+                            val_str,
+                            value=checked,
+                            key=f"mn_rep_{subj}_{zone}_{sel_tp_view}_{sel_param_view}_{r}",
+                        )
+                        if new_checked:
+                            new_set.add(r)
+                        if new_checked != checked:
+                            changed = True
+
+                if new_set != current_set:
+                    included_reps[key4] = new_set
+                    changed = True
+
+        if changed:
+            st.session_state["mn_included_reps"] = included_reps
+            # Invalidate downstream
+            for k in ("mn_stats_df", "mn_stats_edited", "mn_ecrf"):
+                st.session_state[k] = None
+
+    # Baseline selection (needed before computing stats)
+    st.divider()
+    bl_options  = all_tps_loaded
+    bl_def      = bl_options.index("BL") if "BL" in bl_options else 0
+    baseline_tp = st.selectbox(
+        "Baseline timepoint",
+        bl_options,
+        index=bl_def,
+        format_func=lambda t: f"{TP_DISPLAY.get(t, t)} ({t})",
+        key="mn_baseline",
+    )
+
+    # ════════════════════════════════════════════════════════════
+    # STEP 4 — Compute stats & show editable summary table
+    # ════════════════════════════════════════════════════════════
+    st.divider()
+    st.header("Step 4 — Statistical Summary")
+    st.caption(
+        "Review and edit any values below before generating charts. "
+        "Mean values drive bar heights; % Change and significance drive pill badges and highlights."
+    )
+
+    if st.button("⚙️ (Re)compute Statistics", type="secondary", key="mn_compute"):
+        with st.spinner("Computing…"):
+            raw_stats = _compute_stats_from_rep_df(
+                rep_df,
+                st.session_state["mn_included_reps"] or {},
+                baseline_tp,
+            )
+        st.session_state["mn_stats_df"]     = raw_stats
+        st.session_state["mn_stats_edited"] = raw_stats.copy()
+        st.session_state["mn_ecrf"]         = None
+        st.rerun()
+
+    stats_edited: pd.DataFrame | None = st.session_state["mn_stats_edited"]
+
+    if stats_edited is None:
+        st.info("Click **⚙️ (Re)compute Statistics** after reviewing reps above.")
+        st.stop()
+
+    # Editable columns — expose only the user-facing ones, keep hidden cols for logic
+    DISPLAY_COLS    = ["Assessment", "Time Point", "n",
+                       "Mean", "p-value",
+                       "Mean % Change From Baseline", "Significant"]
+    HIDDEN_COLS     = ["_tp_code", "_is_baseline", "_mean_float"]
+
+    display_df = stats_edited[DISPLAY_COLS].copy()
+
+    edited_display = st.data_editor(
+        display_df,
+        use_container_width=True,
+        hide_index=True,
+        num_rows="fixed",
+        column_config={
+            "Assessment":                  st.column_config.TextColumn(disabled=True),
+            "Time Point":                  st.column_config.TextColumn(disabled=True),
+            "n":                           st.column_config.NumberColumn(min_value=0, step=1),
+            "Mean":                        st.column_config.NumberColumn(format="%.4f"),
+            "p-value":                     st.column_config.TextColumn(),
+            "Mean % Change From Baseline": st.column_config.TextColumn(),
+            "Significant": st.column_config.SelectboxColumn(
+                options=["Significant", "Not significant", "—"], required=False
+            ),
+        },
+        key="mn_table_editor",
+    )
+
+    # Merge edits back into the full DataFrame (preserving hidden cols)
+    merged = stats_edited.copy()
+    for col in DISPLAY_COLS:
+        if col in edited_display.columns:
+            merged[col] = edited_display[col].values
+
+    # Re-parse _mean_float from edited "Mean" so charts stay in sync
+    def _parse_mean(cell) -> float:
+        try:
+            return float(str(cell).replace(",", "").strip())
+        except (ValueError, AttributeError):
+            return float("nan")
+
+    merged["_mean_float"] = merged["Mean"].apply(_parse_mean)
+
+    if not merged.equals(st.session_state["mn_stats_edited"]):
+        st.session_state["mn_stats_edited"] = merged
+        st.session_state["mn_ecrf"]         = None   # invalidate chart cache
+
+    # Download computed stats as CSV
+    csv_bytes = edited_display.to_csv(index=False).encode("utf-8")
+    st.download_button(
+        "⬇️ Download Stats Table (CSV)",
+        data=csv_bytes,
+        file_name=f"{Path(uploaded.name).stem}_monaderm_stats.csv",
+        mime="text/csv",
+        key="mn_csv",
+    )
+
+    # ════════════════════════════════════════════════════════════
+    # STEP 5 — Improvement direction, chart titles, preview
+    # ════════════════════════════════════════════════════════════
+    st.divider()
+    st.header("Step 5 — Charts")
+
+    # Build ECRFData from edited table (lazy — only when table has changed)
+    if st.session_state["mn_ecrf"] is None and st.session_state["mn_stats_edited"] is not None:
+        bl_display = TP_DISPLAY.get(baseline_tp, baseline_tp)
+        ecrf_mn, pstats_mn, adirs_mn = _stats_df_to_ecrf_and_stats(
+            st.session_state["mn_stats_edited"],
+            study_ref or Path(uploaded.name).stem,
+            bl_display,
+        )
+        st.session_state["mn_ecrf"]         = ecrf_mn
+        st.session_state["mn_param_stats"]  = pstats_mn
+        st.session_state["mn_auto_dirs"]    = adirs_mn
+
+    ecrf_mn   = st.session_state["mn_ecrf"]
+    pstats_mn = st.session_state["mn_param_stats"]
+    adirs_mn  = st.session_state["mn_auto_dirs"]
+
+    if ecrf_mn is None:
+        st.info("Compute statistics first.")
+        st.stop()
+
+    keep = list(ecrf_mn.parameters.keys())
+
+    # Improvement direction
+    dir_mode = st.radio(
+        "Improvement direction",
+        ["Accept all auto-detected", "All same direction", "Per parameter"],
+        horizontal=True, key="mn_dir_mode",
+    )
+    imp_dirs: dict = {}
+    if dir_mode == "Accept all auto-detected":
+        imp_dirs = dict(adirs_mn)
+    elif dir_mode == "All same direction":
+        d = st.radio("Direction:", ["Decrease = Improvement", "Increase = Improvement"],
+                     horizontal=True, key="mn_unified_dir")
+        imp_dirs = {k: ("lower" if "Decrease" in d else "higher") for k in keep}
+    else:
+        cols3 = st.columns(3)
+        for i, base in enumerate(keep):
+            with cols3[i % 3]:
+                ch = st.radio(
+                    f"**{base}**",
+                    ["Decrease = Improvement", "Increase = Improvement"],
+                    index=0 if adirs_mn.get(base, "lower") == "lower" else 1,
+                    key=f"mn_dir_{base}",
+                )
+                imp_dirs[base] = "lower" if "Decrease" in ch else "higher"
+
+    # Chart titles
+    with st.expander("Edit chart titles (optional)", expanded=False):
+        chart_titles = {}
+        for base in keep:
+            ref = study_ref or Path(uploaded.name).stem
+            chart_titles[base] = st.text_input(
+                base, value=f"{ref} — {base}", key=f"mn_title_{base}"
+            )
+    if not chart_titles:
+        chart_titles = {b: f"{(study_ref or Path(uploaded.name).stem)} — {b}" for b in keep}
+
+    # Preview
+    preview_p = st.selectbox("Preview chart:", keep, key="mn_preview")
+    if preview_p:
+        active_tps_mn = sorted(
+            [r["Time Point"] for _, r in st.session_state["mn_stats_edited"].iterrows()
+             if r["Assessment"] == preview_p],
+            key=lambda t: tp_sort_key(
+                next((k for k, v in TP_DISPLAY.items() if v == t), t)
+            ),
+        )
+        fig = create_parameter_chart(
+            ecrf_mn, ecrf_mn.parameters[preview_p],
+            pstats_mn.get(preview_p, {}),
+            imp_dirs.get(preview_p, "lower"),
+            active_tps=active_tps_mn,
+            custom_title=chart_titles.get(preview_p),
+            show_center=show_center,
+        )
+        if fig:
+            st.pyplot(fig, use_container_width=True)
+            plt.close(fig)
+        else:
+            st.warning("No chart data — check that at least one non-baseline timepoint has a mean.")
+
+    # ════════════════════════════════════════════════════════════
+    # STEP 6 — Generate PDF
+    # ════════════════════════════════════════════════════════════
+    st.divider()
+    st.header("Step 6 — Generate PDF")
+    st.write(f"**{len(keep)}** parameter(s) · **{ecrf_mn.n_included}** subjects")
+
+    if st.button("📄 Generate PDF", type="primary", key="mn_pdf"):
+        # Collect active TPs per param from the edited stats table
+        # (union across all params — create_parameter_chart handles missing TPs)
+        all_active_tps = sorted(
+            st.session_state["mn_stats_edited"]["Time Point"].unique().tolist(),
+            key=lambda t: tp_sort_key(
+                next((k for k, v in TP_DISPLAY.items() if v == t), t)
+            ),
+        )
+        progress  = st.progress(0, text="Starting…")
+        pdf_bytes = generate_pdf_bytes(
+            ecrf_mn, pstats_mn, imp_dirs, chart_titles,
+            active_tps=all_active_tps,
+            show_center=show_center,
+            progress_bar=progress,
+        )
+        progress.empty()
+        st.success(f"✅ PDF generated — {len(keep)} chart(s).")
+        st.download_button(
+            "⬇️ Download PDF",
+            data=pdf_bytes,
+            file_name=f"{Path(uploaded.name).stem}_Monaderm_Charts.pdf",
+            mime="application/pdf",
+            key="mn_pdf_dl",
+        )
+       
 def run_excel_flow():
     st.header("Step 1 — Upload Workbook")
     uploaded = st.file_uploader("Select EDC Excel workbook (.xlsx / .xls)",
@@ -2273,25 +2993,33 @@ def run_excel_flow():
             file_name=f"{stem}_EDC_Charts.pdf",
             mime="application/pdf")
 
-
 def main():
-    st.set_page_config(page_title="EDC Data Visualizations Generator",
-                       page_icon="📊", layout="wide")
+    st.set_page_config(
+        page_title="EDC Data Visualizations Generator",
+        page_icon="📊", layout="wide",
+    )
     st.title("📊 EDC Data Visualizations Generator v2.0")
-    st.caption("Generates mean-change-from-baseline charts for EDC datasets.")
+    st.caption("Generates mean-change-from-baseline charts for EDC and Monaderm datasets.")
 
-    for key in ("ecrf", "all_param_stats", "auto_dirs", "uploaded_file_name"):
+    for key in (
+        "ecrf", "all_param_stats", "auto_dirs", "uploaded_file_name",
+        "mn_file_name", "mn_scan", "mn_rep_df", "mn_included_reps",
+        "mn_stats_df", "mn_stats_edited", "mn_ecrf",
+        "mn_param_stats", "mn_auto_dirs",
+    ):
         if key not in st.session_state:
             st.session_state[key] = None
 
     input_mode = st.radio(
         "Input mode",
-        options=["Upload Excel", "Manual Entry"],
+        ["Upload Excel (EDC)", "Monaderm Instrument", "Manual Entry"],
         horizontal=True,
     )
 
-    if input_mode == "Upload Excel":
+    if input_mode == "Upload Excel (EDC)":
         run_excel_flow()
+    elif input_mode == "Monaderm Instrument":
+        run_monaderm_flow()
     else:
         run_manual_entry_flow()
 
