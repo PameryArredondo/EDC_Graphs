@@ -3266,7 +3266,10 @@ def main():
         page_icon="📊", layout="wide",
     )
     st.title("📊 EDC Data Visualizations Generator v2.0")
-    st.caption("Generates mean-change-from-baseline charts for eCRF and Monaderm datasets.")
+    st.caption(
+        "Generate mean-change-from-baseline bar charts from DataCapt exports. "
+        "Supports eCRF and Monaderm instrument data — upload a file below to get started."
+    )
 
     for key in (
         "ecrf", "all_param_stats", "auto_dirs", "uploaded_file_name",
@@ -3290,13 +3293,18 @@ def main():
 
     # ── Upload & auto-detect ─────────────────────────────────────────────────
     uploaded = st.file_uploader(
-        "Upload a DataCapt export — export_ecrf or export_data_analysis (.xlsx / .xls / .xlsm)",
+        "Upload a DataCapt export — export_ecrf or export_data_analysis (.xlsx / .xls / .xlsm) "
+        "· Click 'Browse files' to access Egnyte and select a workbook to analyse",
         type=["xlsx", "xls", "xlsm"],
         key="main_uploader",
     )
 
     if uploaded is None:
-        st.info("Upload a file to begin. The format will be detected automatically.")
+        st.info(
+            "Click **Browse files** to access Egnyte and select an "
+            "**export_ecrf** or **export_data_analysis** workbook. "
+            "The file format will be detected automatically."
+        )
         st.stop()
 
     file_bytes  = uploaded.read()
