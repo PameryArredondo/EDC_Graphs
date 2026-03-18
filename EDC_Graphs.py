@@ -3176,17 +3176,50 @@ def run_excel_flow(file_bytes: bytes = None, file_name: str = None):
             keep, active_tps, analysis_mode)
 
         if not stats_df.empty:
-            def highlight_sig(val):
-                if isinstance(val, str) and "*" in val:
-                    return "background-color: #e6f4ea; color: #1a6e35; font-weight: bold"
-                return ""
+            # Build display df with shaded header rows per parameter group
+            all_cols = list(stats_df.columns)
+            header_rows = []
+            data_rows   = []
+            style_map   = {}   # row_idx -> style string
+
+            row_idx = 0
+            for param_name, grp in stats_df.groupby("Assessment", sort=False):
+                # Header row — param name spans, all other cells blank
+                header = {c: "" for c in all_cols}
+                header["Assessment"] = f"▸  {param_name}"
+                header_rows.append((row_idx, header))
+                style_map[row_idx] = "header"
+                row_idx += 1
+                for _, r in grp.iterrows():
+                    data_row = r.to_dict()
+                    data_row["Assessment"] = ""   # blank — shown in header
+                    data_rows.append((row_idx, data_row))
+                    if isinstance(r.get("p-value"), str) and "*" in r["p-value"]:
+                        style_map[row_idx] = "sig"
+                    row_idx += 1
+
+            # Reconstruct in order
+            ordered = sorted(header_rows + data_rows, key=lambda x: x[0])
+            display_df = pd.DataFrame([r for _, r in ordered], columns=all_cols)
+
+            def style_grouped(row):
+                idx = row.name
+                if style_map.get(idx) == "header":
+                    return ["background-color: #e8edf2; font-weight: bold; color: #1a1a2e"] * len(row)
+                if style_map.get(idx) == "sig":
+                    styles = [""] * len(row)
+                    if "p-value" in all_cols:
+                        styles[all_cols.index("p-value")] = (
+                            "background-color: #e6f4ea; color: #1a6e35; font-weight: bold"
+                        )
+                    return styles
+                return [""] * len(row)
 
             st.dataframe(
-                stats_df.style.applymap(highlight_sig, subset=["p-value"])
-                if "p-value" in stats_df.columns else stats_df,
+                display_df.style.apply(style_grouped, axis=1),
                 hide_index=True,
                 use_container_width=True,
-                height=min(600, 38 + 35 * len(stats_df)),
+                height=min(700, 38 + 35 * len(display_df)),
             )
 
             if is_expert:
