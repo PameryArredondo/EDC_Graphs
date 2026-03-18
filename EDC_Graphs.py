@@ -436,7 +436,6 @@ def find_option_values_sheet(excel_file, ecrf_sheet_name):
             pass
     return None
 
-
 def load_ov_variable_basenames(excel_file, ov_sheet_name):
     df = pd.read_excel(excel_file, sheet_name=ov_sheet_name, header=0)
     df.columns = [str(c).strip() for c in df.columns]
@@ -449,13 +448,24 @@ def load_ov_variable_basenames(excel_file, ov_sheet_name):
         basenames.add(m.group(1).upper() if m else var.upper())
     return basenames
 
-
 def find_ecrf_sheets(excel_file):
     xls   = pd.ExcelFile(excel_file)
     cands = [sn for sn in xls.sheet_names
              if "ecrf" in sn.lower() or "crf" in sn.lower()]
     return cands if cands else xls.sheet_names
 
+def _detect_file_format(file_bytes: bytes) -> str:
+    try:
+        raw_sheet = _detect_monaderm_sheet(io.BytesIO(file_bytes))
+        if raw_sheet is None:
+            return "edc"
+        peek = pd.read_excel(io.BytesIO(file_bytes), sheet_name=raw_sheet, nrows=1)
+        cols = {str(c).strip().upper() for c in peek.columns}
+        if MONADERM_REQUIRED_COLS.issubset(cols):
+            return "monaderm"
+    except Exception:
+        pass
+    return "edc"
 
 # ═══════════════════════════════════════════════════════════════
 # 7. SUBJECT ID NORMALIZATION
@@ -612,9 +622,9 @@ def parse_ecrf_data(excel_file, ecrf_sheet, ov_exclusion_basenames,
 
     return ecrf, None
 
-#SECTION 8b — MONADERM HELPERS & PARSER
 # ═══════════════════════════════════════════════════════════════
-
+# SECTION 8b — MONADERM HELPERS & PARSER
+# ═══════════════════════════════════════════════════════════════
 MONADERM_REQUIRED_COLS = {"SUBJECT", "KINETIC", "PARAMETER", "VALUE", "REPETITION"}
 
 
@@ -896,6 +906,7 @@ def _stats_df_to_ecrf_and_stats(
 
     ecrf.n_included = int(stats_df["n"].max()) if not stats_df.empty else 0
     return ecrf, all_param_stats, auto_dirs
+
 
 # ═══════════════════════════════════════════════════════════════
 # 9. HELPERS
@@ -2070,42 +2081,33 @@ def run_manual_entry_flow():
 # MONADERM STREAMLIT FLOW
 # ═══════════════════════════════════════════════════════════════
 
-def run_monaderm_flow():
+def run_monaderm_flow(file_bytes: bytes = None, file_name: str = None):
     # ── Persistent state keys ────────────────────────────────────────────────
     for k in ("mn_file_name", "mn_scan", "mn_rep_df",
-              "mn_included_reps",   # dict (subj,zone,tp,param)->set[int]
-              "mn_stats_df",        # computed stats (pre-edit)
-              "mn_stats_edited",    # user-edited stats df (drives charts)
+              "mn_included_reps",
+              "mn_stats_df",
+              "mn_stats_edited",
               "mn_ecrf", "mn_param_stats", "mn_auto_dirs"):
         if k not in st.session_state:
             st.session_state[k] = None
 
     # ════════════════════════════════════════════════════════════
-    # STEP 1 — Upload & configure
+    # STEP 1 — Configure
     # ════════════════════════════════════════════════════════════
-    st.header("Step 1 — Upload Monaderm Workbook")
-    uploaded = st.file_uploader(
-        "Select Monaderm RAW DATA workbook (.xlsx / .xls / .xlsm)",
-        type=["xlsx", "xls", "xlsm"], key="mn_uploader",
-    )
-    if uploaded is None:
-        st.info("Upload a Monaderm workbook to begin.")
-        st.stop()
+    st.header("Step 1 — Configure")
 
-    if uploaded.name != st.session_state["mn_file_name"]:
+    if file_name != st.session_state["mn_file_name"]:
         for k in ("mn_scan", "mn_rep_df", "mn_included_reps",
                   "mn_stats_df", "mn_stats_edited",
                   "mn_ecrf", "mn_param_stats", "mn_auto_dirs"):
             st.session_state[k] = None
-        st.session_state["mn_file_name"] = uploaded.name
-
-    file_bytes = uploaded.read()
+        st.session_state["mn_file_name"] = file_name
 
     # Sheet selection
-    xls          = pd.ExcelFile(io.BytesIO(file_bytes))
-    sheet_opts   = xls.sheet_names
-    auto_sheet   = _detect_monaderm_sheet(io.BytesIO(file_bytes))
-    default_idx  = sheet_opts.index(auto_sheet) if auto_sheet in sheet_opts else 0
+    xls         = pd.ExcelFile(io.BytesIO(file_bytes))
+    sheet_opts  = xls.sheet_names
+    auto_sheet  = _detect_monaderm_sheet(io.BytesIO(file_bytes))
+    default_idx = sheet_opts.index(auto_sheet) if auto_sheet in sheet_opts else 0
     if auto_sheet:
         st.success(f"RAW DATA sheet auto-detected: **{auto_sheet}**")
     raw_sheet = st.selectbox("RAW DATA sheet", sheet_opts, index=default_idx, key="mn_sheet")
@@ -2377,7 +2379,7 @@ def run_monaderm_flow():
     st.download_button(
         "⬇️ Download Stats Table (CSV)",
         data=csv_bytes,
-        file_name=f"{Path(uploaded.name).stem}_monaderm_stats.csv",
+        file_name=f"{Path(file_name).stem}_monaderm_stats.csv",
         mime="text/csv",
         key="mn_csv",
     )
@@ -2393,7 +2395,7 @@ def run_monaderm_flow():
         bl_display = TP_DISPLAY.get(baseline_tp, baseline_tp)
         ecrf_mn, pstats_mn, adirs_mn = _stats_df_to_ecrf_and_stats(
             st.session_state["mn_stats_edited"],
-            study_ref or Path(uploaded.name).stem,
+            study_ref or Path(file_name).stem,
             bl_display,
         )
         st.session_state["mn_ecrf"]         = ecrf_mn
@@ -2439,12 +2441,12 @@ def run_monaderm_flow():
     with st.expander("Edit chart titles (optional)", expanded=False):
         chart_titles = {}
         for base in keep:
-            ref = study_ref or Path(uploaded.name).stem
+            ref = study_ref or Path(file_name).stem
             chart_titles[base] = st.text_input(
                 base, value=f"{ref} — {base}", key=f"mn_title_{base}"
             )
     if not chart_titles:
-        chart_titles = {b: f"{(study_ref or Path(uploaded.name).stem)} — {b}" for b in keep}
+        chart_titles = {b: f"{(study_ref or Path(file_name).stem)} — {b}" for b in keep}
 
     # Preview
     preview_p = st.selectbox("Preview chart:", keep, key="mn_preview")
@@ -2498,25 +2500,18 @@ def run_monaderm_flow():
         st.download_button(
             "⬇️ Download PDF",
             data=pdf_bytes,
-            file_name=f"{Path(uploaded.name).stem}_Monaderm_Charts.pdf",
+            file_name=f"{Path(file_name).stem}_Monaderm_Charts.pdf",
             mime="application/pdf",
             key="mn_pdf_dl",
         )
        
-def run_excel_flow():
-    st.header("Step 1 — Upload Workbook")
-    uploaded = st.file_uploader("Select EDC Excel workbook (.xlsx / .xls)",
-                                 type=["xlsx", "xls"])
-    if uploaded is None:
-        st.info("Upload an EDC Excel workbook to begin.")
-        st.stop()
+def run_excel_flow(file_bytes: bytes = None, file_name: str = None):
+    st.header("Step 1 — Configure")
 
-    if uploaded.name != st.session_state.uploaded_file_name:
+    if file_name != st.session_state.uploaded_file_name:
         for k in ("ecrf", "all_param_stats", "auto_dirs"):
             st.session_state[k] = None
-        st.session_state.uploaded_file_name = uploaded.name
-
-    file_bytes = uploaded.read()
+        st.session_state.uploaded_file_name = file_name
 
     sheets     = find_ecrf_sheets(io.BytesIO(file_bytes))
     ecrf_sheet = st.selectbox("EDC data sheet", options=sheets, index=0)
@@ -2952,7 +2947,7 @@ def run_excel_flow():
                             "matches ASFS, ASFSSCORE, ASFS_SCORE, or ASFSTOTAL.")
 
             csv_bytes = stats_df.to_csv(index=False).encode("utf-8")
-            stem      = Path(uploaded.name).stem
+            stem      = Path(file_name).stem
             st.download_button(
                 label="⬇️ Download Stats Table (CSV)",
                 data=csv_bytes,
@@ -2985,7 +2980,7 @@ def run_excel_flow():
         )
         progress.empty()
 
-        stem = Path(uploaded.name).stem
+        stem = Path(file_name).stem
         st.success(f"✅ PDF generated — {len(keep)} chart(s).")
         st.download_button(
             label="⬇️ Download PDF",
@@ -2999,7 +2994,7 @@ def main():
         page_icon="📊", layout="wide",
     )
     st.title("📊 EDC Data Visualizations Generator v2.0")
-    st.caption("Generates mean-change-from-baseline charts for EDC and Monaderm datasets.")
+    st.caption("Generates mean-change-from-baseline charts for eCRF and Monaderm datasets.")
 
     for key in (
         "ecrf", "all_param_stats", "auto_dirs", "uploaded_file_name",
@@ -3010,18 +3005,36 @@ def main():
         if key not in st.session_state:
             st.session_state[key] = None
 
-    input_mode = st.radio(
-        "Input mode",
-        ["Upload Excel (EDC)", "Monaderm Instrument", "Manual Entry"],
+    mode = st.radio(
+        "Mode",
+        ["Upload File", "Manual Entry"],
         horizontal=True,
     )
 
-    if input_mode == "Upload Excel (EDC)":
-        run_excel_flow()
-    elif input_mode == "Monaderm Instrument":
-        run_monaderm_flow()
-    else:
+    if mode == "Manual Entry":
         run_manual_entry_flow()
+        return
+
+    # ── Upload & auto-detect ─────────────────────────────────────────────────
+    uploaded = st.file_uploader(
+        "Upload workbook — eCRF (.xlsx/.xls) or Monaderm RAW DATA (.xlsx/.xls/.xlsm)",
+        type=["xlsx", "xls", "xlsm"],
+        key="main_uploader",
+    )
+
+    if uploaded is None:
+        st.info("Upload a file to begin. The format will be detected automatically.")
+        st.stop()
+
+    file_bytes  = uploaded.read()
+    file_format = _detect_file_format(file_bytes)
+
+    if file_format == "monaderm":
+        st.success("📡 Monaderm RAW DATA format detected.")
+        run_monaderm_flow(file_bytes=file_bytes, file_name=uploaded.name)
+    else:
+        st.success("📋 eCRF format detected.")
+        run_excel_flow(file_bytes=file_bytes, file_name=uploaded.name)
 
 
 if __name__ == "__main__":
