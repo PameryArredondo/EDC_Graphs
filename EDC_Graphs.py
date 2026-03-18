@@ -215,7 +215,6 @@ def is_expert_or_tolerance_param(param_name: str) -> bool:
             return True
     return False
 
-
 def is_expert_grading_param(p: str) -> bool:
     u = p.upper().strip()
     return any(kw in u for kw in EXPERT_GRADING_KEYWORDS)
@@ -293,7 +292,6 @@ def collapse_blank_lines(txt: str) -> str:
         result = result.replace("\n\n\n", "\n\n")
     return result.strip()
 
-
 # ═══════════════════════════════════════════════════════════════
 # 3. TIMEPOINT PARSING
 # ═══════════════════════════════════════════════════════════════
@@ -327,11 +325,21 @@ def tp_sort_key(tp):
 # 4. DATA STRUCTURES
 # ═══════════════════════════════════════════════════════════════
 
+_MEAS_REP_PAT = re.compile(r'measur?ement\s+\d+', re.IGNORECASE)
+
+def _is_measurement_rep(q_text: str) -> bool:
+    """True if the question text indicates a repeated measurement (Measurement 1/2/3)."""
+    return bool(_MEAS_REP_PAT.search(q_text))
+
 class ParameterInfo:
     def __init__(self, base_name, display_name):
         self.base_name    = base_name
         self.display_name = display_name
-        self.tp_columns   = OrderedDict()
+        self.tp_columns   = OrderedDict()   # {tp: single_col}  — non-rep params
+        self.rep_columns  = OrderedDict()   # {tp: [col1, col2, col3]}  — rep params
+
+    def is_rep_param(self) -> bool:
+        return bool(self.rep_columns)
 
     def __repr__(self):
         return f"Param({self.base_name}: {self.display_name}, {len(self.tp_columns)} tps)"
@@ -542,14 +550,16 @@ def parse_ecrf_data(excel_file, ecrf_sheet, ov_exclusion_basenames,
     ecrf.n_included        = len(ecrf.included_subjects)
     ecrf.df                = df_included
 
-    tp_set          = set()
-    param_collector = defaultdict(lambda: {'display': '', 'tp_cols': OrderedDict()})
-    orphan_collector= defaultdict(lambda: {'display': '', 'col': ''})
-    metadata_upper  = {m.upper() for m in METADATA_COLS}
-    col_map         = {}
-    orphan_col_map  = {}
-    q_texts_map     = {}
-    tp_appearance   = {}
+    tp_set           = set()
+    param_collector  = defaultdict(lambda: {
+        'display': '', 'tp_cols': OrderedDict(), 'tp_rep_cols': OrderedDict(),
+    })
+    orphan_collector = defaultdict(lambda: {'display': '', 'col': ''})
+    metadata_upper   = {m.upper() for m in METADATA_COLS}
+    col_map          = {}
+    orphan_col_map   = {}
+    q_texts_map      = {}
+    tp_appearance    = {}
 
     for i, var in enumerate(headers):
         if not var or var.upper() in metadata_upper \
@@ -558,6 +568,7 @@ def parse_ecrf_data(excel_file, ecrf_sheet, ov_exclusion_basenames,
         info      = parse_header_info(var)
         tp_prefix = info['timepoint']
         base_name = info['parameter']
+        q_text    = q_texts[i] if i < len(q_texts) else ""
 
         if base_name in ov_exclusion_basenames:
             continue
@@ -569,9 +580,8 @@ def parse_ecrf_data(excel_file, ecrf_sheet, ov_exclusion_basenames,
             if not is_excluded_parameter(base_name):
                 if len(col_data) == 0 or is_likely_data_parameter(col_data, base_name):
                     orphan_collector[base_name]['col'] = var
-                    if not orphan_collector[base_name]['display'] \
-                            and i < len(q_texts) and q_texts[i]:
-                        orphan_collector[base_name]['display'] = q_texts[i]
+                    if not orphan_collector[base_name]['display'] and q_text:
+                        orphan_collector[base_name]['display'] = q_text
                     orphan_col_map[base_name] = var
             continue
 
@@ -585,12 +595,30 @@ def parse_ecrf_data(excel_file, ecrf_sheet, ov_exclusion_basenames,
         tp_set.add(tp_prefix)
         if tp_prefix not in tp_appearance:
             tp_appearance[tp_prefix] = i
-        entry = param_collector[base_name]
-        entry['tp_cols'][tp_prefix] = var
-        if not entry['display'] and i < len(q_texts) and q_texts[i]:
-            entry['display'] = q_texts[i]
-            q_texts_map[base_name] = q_texts[i]
-        col_map[(tp_prefix, base_name)] = var
+
+        # ── Rep detection ────────────────────────────────────────────────────
+        if _is_measurement_rep(q_text):
+            # Strip trailing digit from base_name to get canonical key
+            # e.g. S1_MM1 → S1_MM,  S1_DERM1 → S1_DERM
+            canonical = strip_trailing_digits(base_name)
+            if not canonical:
+                canonical = base_name
+            entry = param_collector[canonical]
+            # Use the first rep's question text, stripping the " 1" suffix
+            if not entry['display']:
+                clean = _MEAS_REP_PAT.sub('', q_text).strip().rstrip(',').strip()
+                entry['display']   = clean or canonical
+                q_texts_map[canonical] = entry['display']
+            # Accumulate rep columns per tp
+            entry['tp_rep_cols'].setdefault(tp_prefix, []).append(var)
+        else:
+            # Normal single-column parameter
+            entry = param_collector[base_name]
+            entry['tp_cols'][tp_prefix] = var
+            if not entry['display'] and q_text:
+                entry['display']       = q_text
+                q_texts_map[base_name] = q_text
+            col_map[(tp_prefix, base_name)] = var
 
     all_tps_sorted       = sort_timepoints_by_appearance(list(tp_set), tp_appearance)
     known_upper          = {t.upper() for t in KNOWN_TP_ORDER}
@@ -605,6 +633,8 @@ def parse_ecrf_data(excel_file, ecrf_sheet, ov_exclusion_basenames,
         for tp in all_tps_sorted:
             if tp in info['tp_cols']:
                 pi.tp_columns[tp] = info['tp_cols'][tp]
+            if tp in info['tp_rep_cols']:
+                pi.rep_columns[tp] = info['tp_rep_cols'][tp]
         ecrf.parameters[base_name] = pi
 
     ecrf.parameters = group_duplicate_parameters(
@@ -621,7 +651,6 @@ def parse_ecrf_data(excel_file, ecrf_sheet, ov_exclusion_basenames,
         ecrf.baseline_prefix = all_tps_sorted[0]
 
     return ecrf, None
-
 # ═══════════════════════════════════════════════════════════════
 # SECTION 8b — MONADERM HELPERS & PARSER
 # ═══════════════════════════════════════════════════════════════
@@ -716,15 +745,6 @@ def _compute_stats_from_rep_df(
     baseline_tp: str,
     dropped_subjects: list[str] | None = None,
 ) -> pd.DataFrame:
-    """
-    Given the rep-level DataFrame and a dict of which reps to include,
-    compute per-group means, then build a stats summary matching the
-    format produced by build_stats_table():
-
-        Assessment | Time Point | n | Mean ± SD | p-value | Mean % Change From Baseline
-
-    p-values are paired t-tests vs baseline (same as compute_parameter_stats path).
-    """
     from scipy import stats as scipy_stats
 
     if dropped_subjects:
@@ -1094,19 +1114,32 @@ def compute_parameter_stats(ecrf, param, min_pairs=3):
     bl_prefix = ecrf.baseline_prefix
     result    = OrderedDict()
 
-    bl_col  = param.tp_columns.get(bl_prefix)
-    bl_mean = None
-    if bl_col and bl_col in df.columns:
-        bl_vals = pd.to_numeric(df[bl_col], errors='coerce').dropna().values
-        bl_mean = np.mean(bl_vals) if len(bl_vals) > 0 else None
+    def get_subject_means(tp) -> pd.Series | None:
+        """Return a Series of per-subject means for this tp, averaging reps if needed."""
+        if param.is_rep_param():
+            rep_cols = [c for c in param.rep_columns.get(tp, []) if c in df.columns]
+            if not rep_cols:
+                return None
+            numeric = df[rep_cols].apply(pd.to_numeric, errors='coerce')
+            return numeric.mean(axis=1)
+        else:
+            col = param.tp_columns.get(tp)
+            if not col or col not in df.columns:
+                return None
+            return pd.to_numeric(df[col], errors='coerce')
+
+    bl_series = get_subject_means(bl_prefix)
+    bl_vals   = bl_series.dropna().values if bl_series is not None else np.array([])
+    bl_mean   = np.mean(bl_vals) if len(bl_vals) > 0 else None
 
     for tp in ecrf.timepoint_order:
-        col = param.tp_columns.get(tp)
-        if not col or col not in df.columns:
+        tp_series = get_subject_means(tp)
+        if tp_series is None:
             continue
-        vals = pd.to_numeric(df[col], errors='coerce').dropna().values
+        vals = tp_series.dropna().values
         if len(vals) == 0:
             continue
+
         mean_val    = np.mean(vals)
         std_val     = np.std(vals, ddof=1) if len(vals) > 1 else 0.0
         pct_change  = None
@@ -1115,17 +1148,18 @@ def compute_parameter_stats(ecrf, param, min_pairs=3):
         if tp != bl_prefix and bl_mean is not None and bl_mean != 0:
             pct_change = ((mean_val - bl_mean) / bl_mean) * 100
 
-        if tp != bl_prefix and bl_col and bl_col in df.columns:
-            bl_s = pd.to_numeric(df[bl_col], errors='coerce')
-            tp_s = pd.to_numeric(df[col],    errors='coerce')
-            mask = bl_s.notna() & tp_s.notna()
+        if tp != bl_prefix and bl_series is not None:
+            mask = bl_series.notna() & tp_series.notna()
             if mask.sum() >= min_pairs:
-                _, p_val    = stats.ttest_rel(bl_s[mask].values, tp_s[mask].values)
+                _, p_val    = stats.ttest_rel(
+                    bl_series[mask].values, tp_series[mask].values)
                 significant = p_val < 0.05
 
-        result[tp] = {'mean': mean_val, 'std': std_val, 'n': len(vals),
-                      'pct_change': pct_change, 'values': vals,
-                      'significant': significant}
+        result[tp] = {
+            'mean': mean_val, 'std': std_val, 'n': len(vals),
+            'pct_change': pct_change, 'values': vals,
+            'significant': significant,
+        }
     return result
 
 
