@@ -2988,6 +2988,56 @@ def run_excel_flow(file_bytes: bytes = None, file_name: str = None):
     st.header(f"Step {4 + step_offset} — Parameters")
 
     all_param_names = list(ecrf.parameters.keys())
+
+    # ── Parameter reclassification ───────────────────────────────────────────
+    unknown_params = [p for p in all_param_names if classify_parameter(p) == "Unknown"]
+    if "ecrf_param_overrides" not in st.session_state:
+        st.session_state["ecrf_param_overrides"] = {}
+    overrides: dict = st.session_state["ecrf_param_overrides"]
+
+    if unknown_params:
+        with st.expander(
+            f"🔍 Reclassify {len(unknown_params)} unknown parameter(s)", expanded=False
+        ):
+            st.caption(
+                "These parameters could not be auto-classified. "
+                "Assign them to a category so they appear under the correct filter."
+            )
+            rcols = st.columns(3)
+            for i, base in enumerate(unknown_params):
+                p = ecrf.parameters[base]
+                with rcols[i % 3]:
+                    current = overrides.get(base, "Unknown")
+                    choice  = st.selectbox(
+                        f"**{base}** — {p.display_name[:30]}",
+                        options=["Unknown"] + ANALYSIS_MODES[1:],
+                        index=(["Unknown"] + ANALYSIS_MODES[1:]).index(current)
+                              if current in ["Unknown"] + ANALYSIS_MODES[1:] else 0,
+                        key=f"override_{base}",
+                    )
+                    if choice != current:
+                        overrides[base] = choice
+                        st.session_state["ecrf_param_overrides"] = overrides
+
+    def effective_classify(param_name: str) -> str:
+        return overrides.get(param_name, classify_parameter(param_name))
+
+    def effective_filter(names: list, mode: str) -> list:
+        if mode == "All Parameters":
+            return names
+        result = []
+        for p in names:
+            effective_type = effective_classify(p)
+            if mode == effective_type:
+                result.append(p)
+            elif effective_type == "Unknown":
+                pass
+            else:
+                continue
+        keyword_matched = filter_parameters_by_mode(
+            [p for p in names if p not in overrides], mode
+        )
+        return list(dict.fromkeys(result + [p for p in keyword_matched if p not in result]))
     mode_counts     = defaultdict(int)
     for p in all_param_names:
         mode_counts[effective_classify(p)] += 1
