@@ -3142,92 +3142,93 @@ def run_excel_flow(file_bytes: bytes = None, file_name: str = None):
     st.caption("Review stats before generating the PDF. "
                "Verify % change direction and p-values are as expected.")
 
-    if keep and active_tps:
-        stats_df = build_stats_table(
-            ecrf, all_param_stats, improvement_dirs,
-            keep, active_tps, analysis_mode)
+    with st.expander("📊 View Statistical Summary Table", expanded=False):
+        if keep and active_tps:
+            stats_df = build_stats_table(
+                ecrf, all_param_stats, improvement_dirs,
+                keep, active_tps, analysis_mode)
 
-        if not stats_df.empty:
-            for drop_col in ("Mean ± SD", "% Subjects Improved"):
-                if drop_col in stats_df.columns:
-                    stats_df = stats_df.drop(columns=[drop_col])
+            if not stats_df.empty:
+                for drop_col in ("Mean ± SD", "% Subjects Improved"):
+                    if drop_col in stats_df.columns:
+                        stats_df = stats_df.drop(columns=[drop_col])
 
-            all_cols = list(stats_df.columns)
-            style_map: dict[int, str] = {}
-            display_rows: list[dict]  = []
-            row_idx = 0
+                all_cols = list(stats_df.columns)
+                style_map: dict[int, str] = {}
+                display_rows: list[dict]  = []
+                row_idx = 0
 
-            seen_params: list[str] = []
-            for v in stats_df["Assessment"]:
-                if v not in seen_params:
-                    seen_params.append(v)
+                seen_params: list[str] = []
+                for v in stats_df["Assessment"]:
+                    if v not in seen_params:
+                        seen_params.append(v)
 
-            for param_name in seen_params:
-                grp = stats_df[stats_df["Assessment"] == param_name]
-                header = {c: "" for c in all_cols}
-                header["Assessment"] = f"▸  {param_name}"
-                display_rows.append(header)
-                style_map[row_idx] = "header"
-                row_idx += 1
-                for _, r in grp.iterrows():
-                    data_row = r.to_dict()
-                    data_row["Assessment"] = ""
-                    display_rows.append(data_row)
-                    if isinstance(r.get("p-value"), str) and "*" in r["p-value"]:
-                        style_map[row_idx] = "sig"
+                for param_name in seen_params:
+                    grp = stats_df[stats_df["Assessment"] == param_name]
+                    header = {c: "" for c in all_cols}
+                    header["Assessment"] = f"▸  {param_name}"
+                    display_rows.append(header)
+                    style_map[row_idx] = "header"
                     row_idx += 1
+                    for _, r in grp.iterrows():
+                        data_row = r.to_dict()
+                        data_row["Assessment"] = ""
+                        display_rows.append(data_row)
+                        if isinstance(r.get("p-value"), str) and "*" in r["p-value"]:
+                            style_map[row_idx] = "sig"
+                        row_idx += 1
 
-            display_df = pd.DataFrame(display_rows, columns=all_cols)
+                display_df = pd.DataFrame(display_rows, columns=all_cols)
 
-            def style_grouped(row):
-                idx = row.name
-                if style_map.get(idx) == "header":
-                    return ["background-color: #e8edf2; font-weight: bold; color: #1a1a2e"] * len(row)
-                if style_map.get(idx) == "sig":
-                    styles = [""] * len(row)
-                    if "p-value" in all_cols:
-                        styles[all_cols.index("p-value")] = (
-                            "background-color: #e6f4ea; color: #1a6e35; font-weight: bold"
+                def style_grouped(row):
+                    idx = row.name
+                    if style_map.get(idx) == "header":
+                        return ["background-color: #e8edf2; font-weight: bold; color: #1a1a2e"] * len(row)
+                    if style_map.get(idx) == "sig":
+                        styles = [""] * len(row)
+                        if "p-value" in all_cols:
+                            styles[all_cols.index("p-value")] = (
+                                "background-color: #e6f4ea; color: #1a6e35; font-weight: bold"
+                            )
+                        return styles
+                    return [""] * len(row)
+
+                col_cfg = {c: st.column_config.TextColumn(width="small") for c in all_cols}
+                col_cfg["Assessment"] = st.column_config.TextColumn(width="medium")
+                col_cfg["Time Point"] = st.column_config.TextColumn(width="small")
+
+                st.dataframe(
+                    display_df.style.apply(style_grouped, axis=1),
+                    hide_index=True,
+                    use_container_width=True,
+                    height=min(700, 38 + 35 * len(display_df)),
+                    column_config=col_cfg,
+                )
+
+                if is_expert:
+                    asfs_df = build_asfs_threshold_table(ecrf, keep, active_tps)
+                    if not asfs_df.empty:
+                        st.subheader("ASFS Threshold Classification — Frequency n (%)")
+                        st.caption(
+                            "Normal / Very Slight (0–15) · Mild (16–24) · "
+                            "Moderate (25–34) · Severe (35–80)"
                         )
-                    return styles
-                return [""] * len(row)
+                        st.dataframe(asfs_df, hide_index=True,
+                                     use_container_width=True,
+                                     height=min(400, 38 + 35 * len(asfs_df)))
 
-            col_cfg = {c: st.column_config.TextColumn(width="small") for c in all_cols}
-            col_cfg["Assessment"] = st.column_config.TextColumn(width="medium")
-            col_cfg["Time Point"] = st.column_config.TextColumn(width="small")
-
-            st.dataframe(
-                display_df.style.apply(style_grouped, axis=1),
-                hide_index=True,
-                use_container_width=True,
-                height=min(700, 38 + 35 * len(display_df)),
-                column_config=col_cfg,
-            )
-
-            if is_expert:
-                asfs_df = build_asfs_threshold_table(ecrf, keep, active_tps)
-                if not asfs_df.empty:
-                    st.subheader("ASFS Threshold Classification — Frequency n (%)")
-                    st.caption(
-                        "Normal / Very Slight (0–15) · Mild (16–24) · "
-                        "Moderate (25–34) · Severe (35–80)"
-                    )
-                    st.dataframe(asfs_df, hide_index=True,
-                                 use_container_width=True,
-                                 height=min(400, 38 + 35 * len(asfs_df)))
-
-            csv_bytes = stats_df.to_csv(index=False).encode("utf-8")
-            stem      = Path(file_name).stem
-            st.download_button(
-                label="⬇️ Download Stats Table (CSV)",
-                data=csv_bytes,
-                file_name=f"{stem}_stats_summary.csv",
-                mime="text/csv",
-            )
+                csv_bytes = stats_df.to_csv(index=False).encode("utf-8")
+                stem      = Path(file_name).stem
+                st.download_button(
+                    label="⬇️ Download Stats Table (CSV)",
+                    data=csv_bytes,
+                    file_name=f"{stem}_stats_summary.csv",
+                    mime="text/csv",
+                )
+            else:
+                st.info("No stats available for the current selection.")
         else:
-            st.info("No stats available for the current selection.")
-    else:
-        st.info("Select parameters and timepoints above to generate the stats table.")
+            st.info("Select parameters and timepoints above to generate the stats table.")
 
     # ── Generate PDF ──────────────────────────────────────────────────────────
     st.divider()
