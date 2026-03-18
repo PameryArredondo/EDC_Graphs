@@ -2099,6 +2099,10 @@ def run_manual_entry_flow():
 # MONADERM STREAMLIT FLOW
 # ═══════════════════════════════════════════════════════════════
 
+# ═══════════════════════════════════════════════════════════════
+# MONADERM STREAMLIT FLOW
+# ═══════════════════════════════════════════════════════════════
+
 def run_monaderm_flow(file_bytes: bytes, file_name: str):
     # ── Persistent state keys ────────────────────────────────────────────────
     for k in ("mn_file_name", "mn_scan", "mn_rep_df",
@@ -2146,8 +2150,8 @@ def run_monaderm_flow(file_bytes: bytes, file_name: str):
     st.divider()
     st.header("Step 1 — Select Parameters & Timepoints")
 
-    if st.button("🔍 Scan File", type="secondary", key="mn_scan_btn"):
-        with st.spinner("Scanning…"):
+    if st.session_state["mn_scan"] is None:
+        with st.spinner("Scanning file…"):
             st.session_state["mn_scan"] = _scan_monaderm_file(file_bytes, raw_sheet)
             for k in ("mn_rep_df", "mn_included_reps", "mn_stats_df",
                       "mn_stats_edited", "mn_ecrf"):
