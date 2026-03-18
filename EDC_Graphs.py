@@ -2083,6 +2083,10 @@ def run_manual_entry_flow():
 # MONADERM STREAMLIT FLOW
 # ═══════════════════════════════════════════════════════════════
 
+# ═══════════════════════════════════════════════════════════════
+# MONADERM STREAMLIT FLOW
+# ═══════════════════════════════════════════════════════════════
+
 def run_monaderm_flow(file_bytes: bytes, file_name: str):
     # ── Persistent state keys ────────────────────────────────────────────────
     for k in ("mn_file_name", "mn_scan", "mn_rep_df",
@@ -2101,13 +2105,23 @@ def run_monaderm_flow(file_bytes: bytes, file_name: str):
         st.session_state["mn_file_name"] = file_name
 
     # Sheet selection
-    xls         = pd.ExcelFile(io.BytesIO(file_bytes))
-    sheet_opts  = xls.sheet_names
-    auto_sheet  = _detect_monaderm_sheet(io.BytesIO(file_bytes))
-    default_idx = sheet_opts.index(auto_sheet) if auto_sheet in sheet_opts else 0
-    if auto_sheet:
-        st.success(f"RAW DATA sheet auto-detected: **{auto_sheet}**")
-    raw_sheet = st.selectbox("RAW DATA sheet", sheet_opts, index=default_idx, key="mn_sheet")
+    xls        = pd.ExcelFile(io.BytesIO(file_bytes))
+    sheet_opts = xls.sheet_names
+    auto_sheet = _detect_monaderm_sheet(io.BytesIO(file_bytes))
+
+    if auto_sheet and len(sheet_opts) == 1:
+        # Only one sheet — just use it silently
+        raw_sheet = auto_sheet
+    elif auto_sheet:
+        # Multiple sheets but one was auto-detected — offer override only if needed
+        raw_sheet = st.selectbox(
+            "RAW DATA sheet", sheet_opts,
+            index=sheet_opts.index(auto_sheet),
+            key="mn_sheet",
+        )
+    else:
+        # Nothing detected — user must pick
+        raw_sheet = st.selectbox("RAW DATA sheet", sheet_opts, key="mn_sheet")
 
     # Study reference & options
     col_a, col_b = st.columns(2)
