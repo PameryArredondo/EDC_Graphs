@@ -3086,7 +3086,8 @@ def run_excel_flow(file_bytes: bytes = None, file_name: str = None):
         for i, base in enumerate(keep):
             p = ecrf.parameters[base]
             with tcols[i % n_cols]:
-                deflt = f"{ecrf.study_ref}: {analysis_mode} — {p.display_name}"
+                mode_label = "" if analysis_mode == "All Parameters" else f"{analysis_mode} — "
+                deflt = f"{ecrf.study_ref}: {mode_label}{p.display_name}"
                 chart_titles[base] = st.text_input(
                     base, value=deflt, key=f"title_{base}"
                 )
