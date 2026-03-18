@@ -3054,51 +3054,50 @@ def run_excel_flow(file_bytes: bytes = None, file_name: str = None):
     st.divider()
     st.header(f"Step {5 + step_offset} — Charts")
 
-    with st.expander("⚙️ Chart Settings", expanded=False):
-        n_cols = min(len(keep), 3)
+    n_cols = min(max(len(keep), 1), 3)
 
-        st.markdown("**Improvement direction**")
-        dir_mode = st.radio(
-            "Direction",
-            options=["Accept all auto-detected directions",
-                     "Set ALL parameters to the same direction",
-                     "Set each parameter individually"],
-            horizontal=True,
-            key="ecrf_dir_mode",
-            label_visibility="collapsed",
-        )
-        improvement_dirs: dict = {}
-        if dir_mode == "Accept all auto-detected directions":
-            improvement_dirs = {k: v for k, v in auto_dirs.items() if k in keep}
-        elif dir_mode == "Set ALL parameters to the same direction":
-            unified   = st.radio("Direction:", ["Decrease = Improvement", "Increase = Improvement"],
-                                 horizontal=True, key="ecrf_unified_dir")
-            direction = "lower" if "Decrease" in unified else "higher"
-            improvement_dirs = {k: direction for k in keep}
-        else:
-            dcols = st.columns(n_cols)
-            for i, base in enumerate(keep):
-                p = ecrf.parameters[base]
-                with dcols[i % n_cols]:
-                    choice = st.radio(
-                        f"**{base}** — {p.display_name[:30]}",
-                        options=["Decrease = Improvement", "Increase = Improvement"],
-                        index=0 if auto_dirs.get(base, "lower") == "lower" else 1,
-                        key=f"dir_{base}",
-                    )
-                    improvement_dirs[base] = "lower" if "Decrease" in choice else "higher"
-
-        st.markdown("**Chart titles**")
-        chart_titles: dict = {}
-        tcols = st.columns(n_cols)
+    st.markdown("#### Improvement Direction")
+    dir_mode = st.radio(
+        "Direction",
+        options=["Accept all auto-detected directions",
+                 "Set ALL parameters to the same direction",
+                 "Set each parameter individually"],
+        horizontal=True,
+        key="ecrf_dir_mode",
+        label_visibility="collapsed",
+    )
+    improvement_dirs: dict = {}
+    if dir_mode == "Accept all auto-detected directions":
+        improvement_dirs = {k: v for k, v in auto_dirs.items() if k in keep}
+    elif dir_mode == "Set ALL parameters to the same direction":
+        unified   = st.radio("Direction:", ["Decrease = Improvement", "Increase = Improvement"],
+                             horizontal=True, key="ecrf_unified_dir")
+        direction = "lower" if "Decrease" in unified else "higher"
+        improvement_dirs = {k: direction for k in keep}
+    else:
+        dcols = st.columns(n_cols)
         for i, base in enumerate(keep):
             p = ecrf.parameters[base]
-            with tcols[i % n_cols]:
-                mode_label = "" if analysis_mode == "All Parameters" else f"{analysis_mode} — "
-                deflt = f"{ecrf.study_ref}: {mode_label}{p.display_name}"
-                chart_titles[base] = st.text_input(
-                    base, value=deflt, key=f"title_{base}"
+            with dcols[i % n_cols]:
+                choice = st.radio(
+                    f"**{base}** — {p.display_name[:30]}",
+                    options=["Decrease = Improvement", "Increase = Improvement"],
+                    index=0 if auto_dirs.get(base, "lower") == "lower" else 1,
+                    key=f"dir_{base}",
                 )
+                improvement_dirs[base] = "lower" if "Decrease" in choice else "higher"
+
+    st.markdown("#### Chart Titles")
+    chart_titles: dict = {}
+    tcols = st.columns(n_cols)
+    for i, base in enumerate(keep):
+        p = ecrf.parameters[base]
+        with tcols[i % n_cols]:
+            mode_label = "" if analysis_mode == "All Parameters" else f"{analysis_mode} — "
+            deflt = f"{ecrf.study_ref}: {mode_label}{p.display_name}"
+            chart_titles[base] = st.text_input(
+                base, value=deflt, key=f"title_{base}"
+            )
 
     if not chart_titles:
         chart_titles = {
@@ -3161,7 +3160,8 @@ def run_excel_flow(file_bytes: bytes = None, file_name: str = None):
     st.caption("Review stats before generating the PDF. "
                "Verify % change direction and p-values are as expected.")
 
-    if keep and active_tps:
+    with st.expander("📊 View Statistical Summary Table", expanded=False):
+     if keep and active_tps:
         stats_df = build_stats_table(
             ecrf, all_param_stats, improvement_dirs,
             keep, active_tps, analysis_mode)
@@ -3250,7 +3250,7 @@ def run_excel_flow(file_bytes: bytes = None, file_name: str = None):
             )
         else:
             st.info("No stats available for the current selection.")
-    else:
+     else:
         st.info("Select parameters and timepoints above to generate the stats table.")
 
     st.divider()
