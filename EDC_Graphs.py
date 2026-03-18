@@ -2697,8 +2697,6 @@ def run_excel_flow(file_bytes: bytes = None, file_name: str = None):
     ov_sheet      = find_option_values_sheet(io.BytesIO(file_bytes), ecrf_sheet)
     ov_basenames: set = set()
     if ov_sheet:
-        st.success(f"Option Values sheet detected: **{ov_sheet}** — "
-                   "Excluded subjects in the status column excluded automatically.")
         ov_basenames = load_ov_variable_basenames(io.BytesIO(file_bytes), ov_sheet)
     else:
         st.warning("No Option Values sheet found. Relying on built-in exclusion list.")
