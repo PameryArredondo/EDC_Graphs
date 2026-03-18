@@ -1,2 +1,2 @@
-# eCFR_Graphs
+# EDC_Graphs
 Data Visualizations for eCRF Datasets
