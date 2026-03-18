@@ -2953,30 +2953,31 @@ def run_excel_flow(file_bytes: bytes = None, file_name: str = None):
         if n_hidden:
             st.caption(f"ℹ️ {n_hidden} parameter(s) hidden by **{analysis_mode}** filter.")
 
+    any_rep_params = any(ecrf.parameters[b].is_rep_param() for b in filtered_names)
+
     param_rows = []
     for base in filtered_names:
         p        = ecrf.parameters[base]
         s        = all_param_stats.get(base, {})
-        bl_mean  = s.get(ecrf.baseline_prefix, {}).get('mean')
-        last_tps = [tp for tp in active_tps if tp in s and tp != ecrf.baseline_prefix]
-        last_mean = s[last_tps[-1]]['mean'] if last_tps else None
         all_tps_for_param = sorted(
             set(list(p.tp_columns.keys()) + list(p.rep_columns.keys())),
             key=tp_sort_key,
         )
-        param_rows.append({
-            "Variable Name":    base + (" ★" if base in orphan_assignments else ""),
+        row = {
+            "Variable Name": base + (" ★" if base in orphan_assignments else ""),
             "Display Name": p.display_name[:50],
             "Type":         classify_parameter(base),
-            "Timepoints":   ", ".join(all_tps_for_param),
-            "Reps":         f"{len(next(iter(p.rep_columns.values()), []))} reps averaged"
-                            if p.is_rep_param() else "",
-            "BL Mean":      f"{bl_mean:.2f}" if bl_mean is not None else "—",
-            "Last Mean":    f"{last_mean:.2f}" if last_mean is not None else "—",
             "Auto Dir":     "Decrease = Improvement"
                             if auto_dirs.get(base, "lower") == "lower"
                             else "Increase = Improvement",
-        })
+        }
+        for tp in all_tps_for_param:
+            tp_mean = s.get(tp, {}).get('mean')
+            row[TP_DISPLAY.get(tp, tp)] = f"{tp_mean:.2f}" if tp_mean is not None else "—"
+        if any_rep_params:
+            row["Reps"] = f"{len(next(iter(p.rep_columns.values()), []))} reps averaged" \
+                          if p.is_rep_param() else ""
+        param_rows.append(row)
 
     keep = st.multiselect(
         f"Select parameters to include ({len(filtered_names)} shown / "
