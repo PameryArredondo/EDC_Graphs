@@ -3004,7 +3004,7 @@ def run_excel_flow(file_bytes: bytes = None, file_name: str = None):
         p = ecrf.parameters[base]
         s = all_param_stats.get(base, {})
         all_tps_for_param = sorted(
-            set(list(p.tp_columns.keys()) + list(p.rep_columns.keys())),
+            set(list(p.tp_columns.keys()) + list(p.rep_columns.keys())) & set(active_tps),
             key=tp_sort_key,
         )
         row = {
