@@ -106,7 +106,7 @@ COMEDOGENICITY_KEYWORDS = [
 
 INSTRUMENT_KEYWORDS = [
     "VM", "TEWL", "MEP", "ITA", "CUTO", "CHROMA", "SEBO",
-    "MELAN", "ERIT", "HYDRA", "FIRM", "ELAST",
+    "MELAN", "ERIT", "HYDRA", "FIRM", "ELAST", "MM",
     "VAPOMETER", "TEWAMETER", "CORNEOMETER", "CUTOMETER",
     "MEXAMETER", "CHROMAMETER", "SEBUMETER", "MOISTUREMETER",
     "ANTERA", "VISIOFACE", "PRIMOS", "VISIA",
@@ -559,7 +559,8 @@ def parse_ecrf_data(excel_file, ecrf_sheet, ov_exclusion_basenames,
     q_texts_map      = {}
     tp_appearance    = {}
 
-    last_meas_rep_text = ""
+    last_meas_rep_text      = ""
+    last_meas_rep_canonical = ""
 
     for i, var in enumerate(headers):
         if not var or var.upper() in metadata_upper \
@@ -570,15 +571,18 @@ def parse_ecrf_data(excel_file, ecrf_sheet, ov_exclusion_basenames,
         base_name = info['parameter']
         q_text    = q_texts[i] if i < len(q_texts) else ""
 
-        # Carry forward measurement rep label for blank rep columns 2, 3, etc.
+        # Carry forward measurement rep label for blank rep columns
+        canonical_check = strip_trailing_digits(base_name)
         if not q_text and last_meas_rep_text:
-            canonical_check = strip_trailing_digits(base_name)
-            if canonical_check and canonical_check != base_name:
+            if canonical_check and canonical_check == last_meas_rep_canonical:
                 q_text = last_meas_rep_text
+
         if _is_measurement_rep(q_text):
-            last_meas_rep_text = q_text
-        else:
-            last_meas_rep_text = ""
+            last_meas_rep_text      = q_text
+            last_meas_rep_canonical = strip_trailing_digits(base_name)
+        elif canonical_check != last_meas_rep_canonical:
+            last_meas_rep_text      = ""
+            last_meas_rep_canonical = ""
 
         if base_name in ov_exclusion_basenames:
             continue
