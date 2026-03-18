@@ -2810,7 +2810,7 @@ def run_excel_flow(file_bytes: bytes = None, file_name: str = None):
     st.caption("Active timepoints: "
                + " → ".join(TP_DISPLAY.get(t, t) for t in active_tps))
 
-    with st.expander("🔀 Reorder timepoints (drag to fix order)", expanded=True):
+    with st.expander("🔀 Reorder timepoints (drag to fix order)", expanded=False):
         display_labels = [f"{TP_DISPLAY.get(t, t)} ({t})" for t in active_tps]
         sorted_labels  = sort_items(display_labels, direction="vertical")
         sorted_tps     = [active_tps[display_labels.index(l)] for l in sorted_labels]
