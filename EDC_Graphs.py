@@ -2515,78 +2515,75 @@ def run_monaderm_flow(file_bytes: bytes, file_name: str):
 
     keep = list(ecrf_mn.parameters.keys())
     ref  = study_ref or Path(file_name).stem
+    n_cols = min(max(len(keep), 1), 3)
 
     # Restore saved renames
     if st.session_state["mn_param_renames"] is None:
         st.session_state["mn_param_renames"] = {b: b for b in keep}
     param_renames: dict = st.session_state["mn_param_renames"]
-    # Add any new keys that weren't there before
     for b in keep:
         if b not in param_renames:
             param_renames[b] = b
 
-    # ── Chart Settings expander ───────────────────────────────────────────────
-    with st.expander("⚙️ Chart Settings", expanded=False):
-        n_cols   = min(len(keep), 3)
-        r_cols   = st.columns(n_cols)
-        dir_cols = st.columns(n_cols)
-
-        st.markdown("**Rename parameters**")
-        rename_cols = st.columns(n_cols)
-        new_renames = {}
-        for i, base in enumerate(keep):
-            with rename_cols[i % n_cols]:
-                val = st.text_input(
-                    base,
-                    value=param_renames.get(base, base),
-                    key=f"mn_rename_{base}",
-                    placeholder="e.g. Corneometer",
-                )
-                new_renames[base] = val.strip() or base
-
-        if new_renames != param_renames:
-            st.session_state["mn_param_renames"] = new_renames
-            param_renames = new_renames
-            st.session_state["mn_ecrf"] = None  # force title rebuild
-
-        st.markdown("**Improvement direction**")
-        dir_mode = st.radio(
-            "Direction",
-            ["Accept all auto-detected", "All same direction", "Per parameter"],
-            horizontal=True, key="mn_dir_mode", label_visibility="collapsed",
-        )
-        imp_dirs: dict = {}
-        if dir_mode == "Accept all auto-detected":
-            imp_dirs = dict(adirs_mn)
-        elif dir_mode == "All same direction":
-            d = st.radio(
-                "Dir:", ["Decrease = Improvement", "Increase = Improvement"],
-                horizontal=True, key="mn_unified_dir",
+    # ── Rename parameters ─────────────────────────────────────────────────────
+    st.markdown("#### Rename Parameters")
+    rename_cols = st.columns(n_cols)
+    new_renames = {}
+    for i, base in enumerate(keep):
+        with rename_cols[i % n_cols]:
+            val = st.text_input(
+                base,
+                value=param_renames.get(base, base),
+                key=f"mn_rename_{base}",
+                placeholder="e.g. Corneometer",
             )
-            imp_dirs = {k: ("lower" if "Decrease" in d else "higher") for k in keep}
-        else:
-            dcols = st.columns(n_cols)
-            for i, base in enumerate(keep):
-                with dcols[i % n_cols]:
-                    ch = st.radio(
-                        f"**{param_renames.get(base, base)}**",
-                        ["Decrease = Improvement", "Increase = Improvement"],
-                        index=0 if adirs_mn.get(base, "lower") == "lower" else 1,
-                        key=f"mn_dir_{base}",
-                    )
-                    imp_dirs[base] = "lower" if "Decrease" in ch else "higher"
+            new_renames[base] = val.strip() or base
 
-        st.markdown("**Chart titles**")
-        chart_titles = {}
-        title_cols   = st.columns(n_cols)
+    if new_renames != param_renames:
+        st.session_state["mn_param_renames"] = new_renames
+        param_renames = new_renames
+        st.session_state["mn_ecrf"] = None
+
+    # ── Improvement direction ─────────────────────────────────────────────────
+    st.markdown("#### Improvement Direction")
+    dir_mode = st.radio(
+        "Direction",
+        ["Accept all auto-detected", "All same direction", "Per parameter"],
+        horizontal=True, key="mn_dir_mode", label_visibility="collapsed",
+    )
+    imp_dirs: dict = {}
+    if dir_mode == "Accept all auto-detected":
+        imp_dirs = dict(adirs_mn)
+    elif dir_mode == "All same direction":
+        d = st.radio(
+            "Dir:", ["Decrease = Improvement", "Increase = Improvement"],
+            horizontal=True, key="mn_unified_dir",
+        )
+        imp_dirs = {k: ("lower" if "Decrease" in d else "higher") for k in keep}
+    else:
+        dcols = st.columns(n_cols)
         for i, base in enumerate(keep):
-            with title_cols[i % n_cols]:
-                label = param_renames.get(base, base)
-                chart_titles[base] = st.text_input(
-                    param_renames.get(base, base),
-                    value=f"{ref} — {label}",
-                    key=f"mn_title_{base}",
+            with dcols[i % n_cols]:
+                ch = st.radio(
+                    f"**{param_renames.get(base, base)}**",
+                    ["Decrease = Improvement", "Increase = Improvement"],
+                    index=0 if adirs_mn.get(base, "lower") == "lower" else 1,
+                    key=f"mn_dir_{base}",
                 )
+                imp_dirs[base] = "lower" if "Decrease" in ch else "higher"
+
+    # ── Chart titles ──────────────────────────────────────────────────────────
+    st.markdown("#### Chart Titles")
+    chart_titles = {}
+    title_cols = st.columns(n_cols)
+    for i, base in enumerate(keep):
+        with title_cols[i % n_cols]:
+            label = param_renames.get(base, base)
+            chart_titles[base] = st.text_input(
+                label,
+                value=f"{ref} — {label}",
+                key=f"mn_title_{base}",
+            )
 
     if not chart_titles:
         chart_titles = {b: f"{ref} — {param_renames.get(b, b)}" for b in keep}
@@ -2596,8 +2593,8 @@ def run_monaderm_flow(file_bytes: bytes, file_name: str):
         ecrf_mn.parameters[base].display_name = param_renames.get(base, base)
 
     # ── Preview with prev/next navigation ────────────────────────────────────
-    idx     = st.session_state["mn_preview_idx"]
-    idx     = max(0, min(idx, len(keep) - 1))
+    idx       = st.session_state["mn_preview_idx"]
+    idx       = max(0, min(idx, len(keep) - 1))
     preview_p = keep[idx]
 
     if len(keep) > 1:
