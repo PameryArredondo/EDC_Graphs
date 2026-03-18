@@ -1,8 +1,8 @@
 """
-eCRF Chart Generator v1.6 — Streamlit Edition
+EDC Graphs Generator v 2.0 — Streamlit Edition
 ===============================================
 Usage:
-    streamlit run ecrf_chart_generator_streamlit.py
+    streamlit run EDC_Graphs_streamlit.py
 """
 
 import io
