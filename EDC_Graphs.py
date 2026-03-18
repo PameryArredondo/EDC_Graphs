@@ -2167,7 +2167,7 @@ def run_monaderm_flow(file_bytes: bytes, file_name: str):
     # ── Study config ──────────────────────────────────────────────────────────
     col_a, col_b = st.columns(2)
     study_ref   = col_a.text_input(
-        "Study reference",
+        "Study Clinical Number",
         placeholder="e.g. CS251008 (defaults to filename if blank)",
         key="mn_ref",
     )
@@ -3294,7 +3294,7 @@ def main():
         type=["xlsx", "xls", "xlsm"],
         key="main_uploader",
     )
-    
+
     if uploaded is None:
         st.info("Upload a file to begin. The format will be detected automatically.")
         st.stop()
