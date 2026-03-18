@@ -2716,9 +2716,9 @@ def run_excel_flow(file_bytes: bytes = None, file_name: str = None):
             all_param_stats[param.base_name] = compute_parameter_stats(ecrf, param)
         auto_dirs = {p.base_name: auto_detect_improvement_direction(ecrf, p)
                      for p in ecrf.parameters.values()}
-        st.session_state.ecrf            = ecrf
-        st.session_state.all_param_stats = all_param_stats
-        st.session_state.auto_dirs       = auto_dirs
+        st.session_state.ecrf                    = ecrf
+        st.session_state.all_param_stats         = all_param_stats
+        st.session_state.auto_dirs               = auto_dirs
         st.session_state["ecrf_param_overrides"] = {}
         st.session_state["ecrf_tp_order"]        = None
         st.session_state["ecrf_selected_tps"]    = None
@@ -2731,7 +2731,7 @@ def run_excel_flow(file_bytes: bytes = None, file_name: str = None):
     all_param_stats: OrderedDict = st.session_state.all_param_stats
     auto_dirs: dict              = st.session_state.auto_dirs
 
-    # ── Quick summary metrics + subject breakdown in Step 1 ──────────────────
+    # ── Quick summary metrics + subject breakdown ─────────────────────────────
     st.markdown(
         f"**Study:** {ecrf.study_ref or '—'} &nbsp;·&nbsp; "
         f"**Included:** {ecrf.n_included} &nbsp;·&nbsp; "
@@ -2755,6 +2755,7 @@ def run_excel_flow(file_bytes: bytes = None, file_name: str = None):
             } for k, v in sorted(status_counts.items())]),
             hide_index=True, use_container_width=True)
 
+    # ── Step 2 — Timepoint Selection ─────────────────────────────────────────
     st.divider()
     st.header("Step 2 — Timepoint Selection")
 
@@ -2762,7 +2763,6 @@ def run_excel_flow(file_bytes: bytes = None, file_name: str = None):
     mapped_tps = [t for t in all_tps if t.upper() in {x.upper() for x in KNOWN_TP_ORDER}]
     unmapped   = ecrf.unmapped_tps
 
-    # Persist multiselect default so it survives reruns
     if st.session_state.get("ecrf_selected_tps") is None or \
             not set(st.session_state["ecrf_selected_tps"]).issubset(set(all_tps)):
         st.session_state["ecrf_selected_tps"] = mapped_tps
@@ -2779,7 +2779,6 @@ def run_excel_flow(file_bytes: bytes = None, file_name: str = None):
     )
     st.session_state["ecrf_selected_tps"] = selected_tps
 
-    # Reset saved order when selection changes
     saved_order = st.session_state.get("ecrf_tp_order")
     if saved_order and set(saved_order) != set(selected_tps):
         st.session_state["ecrf_tp_order"] = None
@@ -2826,6 +2825,7 @@ def run_excel_flow(file_bytes: bytes = None, file_name: str = None):
     merge_decisions: dict    = {}
     step_offset = 0
 
+    # ── Step 3 — Orphaned Parameters (conditional) ───────────────────────────
     if ecrf.orphaned_params:
         st.divider()
         st.header("Step 3 — Orphaned Parameters")
@@ -2858,8 +2858,7 @@ def run_excel_flow(file_bytes: bytes = None, file_name: str = None):
                     f"⚠️ **{len(conflicts)} potential merge conflict(s) detected.** "
                     "Review below before continuing."
                 )
-                with st.expander("Review conflicts and choose merge behaviour",
-                                 expanded=True):
+                with st.expander("Review conflicts and choose merge behaviour", expanded=True):
                     for c in conflicts:
                         st.markdown(
                             f"**{c['orphan_base']}** (orphan) vs "
@@ -2871,48 +2870,35 @@ def run_excel_flow(file_bytes: bytes = None, file_name: str = None):
                         with mc1:
                             st.markdown(f"*Existing — {c['existing_display']}*")
                             st.markdown(
-                                f"n = **{c['existing_n']}** · "
-                                f"mean = **{c['existing_mean']:.2f}**"
+                                f"n = **{c['existing_n']}** · mean = **{c['existing_mean']:.2f}**"
                                 if c["existing_mean"] is not None
                                 else f"n = **{c['existing_n']}** · mean = —"
                             )
                         with mc2:
                             st.markdown(f"*Orphan — {c['orphan_display']}*")
                             st.markdown(
-                                f"n = **{c['orphan_n']}** · "
-                                f"mean = **{c['orphan_mean']:.2f}**"
+                                f"n = **{c['orphan_n']}** · mean = **{c['orphan_mean']:.2f}**"
                                 if c["orphan_mean"] is not None
                                 else f"n = **{c['orphan_n']}** · mean = —"
                             )
-                        st.dataframe(
-                            c["sample_df"], hide_index=True,
-                            use_container_width=False
-                        )
+                        st.dataframe(c["sample_df"], hide_index=True, use_container_width=False)
                         decision = st.radio(
                             f"Decision for **{c['orphan_base']}**:",
                             options=["Keep separate", "Merge into existing"],
-                            index=0,
-                            horizontal=True,
+                            index=0, horizontal=True,
                             key=f"merge_decision_{c['orphan_base']}",
                         )
-                        merge_decisions[c["orphan_base"]] = (
-                            decision == "Merge into existing"
-                        )
+                        merge_decisions[c["orphan_base"]] = (decision == "Merge into existing")
                         merge_decisions[f"__target_{c['orphan_base']}"] = c["existing_base"]
                         st.divider()
 
-                unresolved = [
-                    c for c in conflicts
-                    if c["orphan_base"] not in merge_decisions
-                ]
+                unresolved = [c for c in conflicts if c["orphan_base"] not in merge_decisions]
                 if unresolved:
                     st.info("Resolve all conflicts above to continue.")
                     st.stop()
 
             ecrf = apply_orphan_assignments(ecrf, orphan_assignments, merge_decisions)
-            ecrf.parameters = group_duplicate_parameters(
-                ecrf.parameters, ecrf.df, {}
-            )
+            ecrf.parameters = group_duplicate_parameters(ecrf.parameters, ecrf.df, {})
 
             for base in orphan_assignments:
                 target = base
@@ -2929,7 +2915,7 @@ def run_excel_flow(file_bytes: bytes = None, file_name: str = None):
                         auto_dirs[target] = auto_detect_improvement_direction(
                             ecrf, ecrf.parameters[target])
 
-            merged_count   = sum(1 for v in merge_decisions.values() if v)
+            merged_count   = sum(1 for v in merge_decisions.values() if v is True)
             separate_count = len(orphan_assignments) - merged_count
             if merged_count:
                 st.success(f"✅ {merged_count} orphan(s) merged into existing parameters.")
@@ -2938,12 +2924,12 @@ def run_excel_flow(file_bytes: bytes = None, file_name: str = None):
 
         step_offset = 1
 
+    # ── Step 3/4 — Parameters ────────────────────────────────────────────────
     st.divider()
     st.header(f"Step {3 + step_offset} — Parameters")
 
     all_param_names = list(ecrf.parameters.keys())
 
-    # ── Parameter reclassification ────────────────────────────────────────────
     unknown_params = [p for p in all_param_names if classify_parameter(p) == "Unknown"]
     if "ecrf_param_overrides" not in st.session_state:
         st.session_state["ecrf_param_overrides"] = {}
@@ -3015,8 +3001,8 @@ def run_excel_flow(file_bytes: bytes = None, file_name: str = None):
 
     param_rows = []
     for base in filtered_names:
-        p        = ecrf.parameters[base]
-        s        = all_param_stats.get(base, {})
+        p = ecrf.parameters[base]
+        s = all_param_stats.get(base, {})
         all_tps_for_param = sorted(
             set(list(p.tp_columns.keys()) + list(p.rep_columns.keys())),
             key=tp_sort_key,
@@ -3049,6 +3035,7 @@ def run_excel_flow(file_bytes: bytes = None, file_name: str = None):
             df_rows[df_rows["Variable Name"].str.rstrip(" ★").isin(keep)],
             hide_index=True, use_container_width=True)
 
+    # ── Step 4/5 — Charts ────────────────────────────────────────────────────
     st.divider()
     st.header(f"Step {4 + step_offset} — Charts")
 
@@ -3125,6 +3112,7 @@ def run_excel_flow(file_bytes: bytes = None, file_name: str = None):
     else:
         st.warning("No parameters selected.")
 
+    # ── Data Quality (only shown if issues exist) ─────────────────────────────
     if keep and active_tps:
         dq_issues  = scan_data_quality(ecrf, keep, active_tps)
         dq_summary = summarise_data_quality(dq_issues)
@@ -3148,19 +3136,18 @@ def run_excel_flow(file_bytes: bytes = None, file_name: str = None):
                              hide_index=True, use_container_width=True)
             step_offset += 1
 
+    # ── Statistical Summary ───────────────────────────────────────────────────
     st.divider()
     st.header(f"Step {5 + step_offset} — Statistical Summary")
     st.caption("Review stats before generating the PDF. "
                "Verify % change direction and p-values are as expected.")
 
-    with st.expander("📊 View Statistical Summary Table", expanded=False):
     if keep and active_tps:
         stats_df = build_stats_table(
             ecrf, all_param_stats, improvement_dirs,
             keep, active_tps, analysis_mode)
 
         if not stats_df.empty:
-            # Drop any legacy columns not needed
             for drop_col in ("Mean ± SD", "% Subjects Improved"):
                 if drop_col in stats_df.columns:
                     stats_df = stats_df.drop(columns=[drop_col])
@@ -3170,7 +3157,6 @@ def run_excel_flow(file_bytes: bytes = None, file_name: str = None):
             display_rows: list[dict]  = []
             row_idx = 0
 
-            # Walk params in original order
             seen_params: list[str] = []
             for v in stats_df["Assessment"]:
                 if v not in seen_params:
@@ -3178,14 +3164,11 @@ def run_excel_flow(file_bytes: bytes = None, file_name: str = None):
 
             for param_name in seen_params:
                 grp = stats_df[stats_df["Assessment"] == param_name]
-
-                # Shaded header row
                 header = {c: "" for c in all_cols}
                 header["Assessment"] = f"▸  {param_name}"
                 display_rows.append(header)
                 style_map[row_idx] = "header"
                 row_idx += 1
-
                 for _, r in grp.iterrows():
                     data_row = r.to_dict()
                     data_row["Assessment"] = ""
@@ -3246,6 +3229,7 @@ def run_excel_flow(file_bytes: bytes = None, file_name: str = None):
     else:
         st.info("Select parameters and timepoints above to generate the stats table.")
 
+    # ── Generate PDF ──────────────────────────────────────────────────────────
     st.divider()
     st.header(f"Step {6 + step_offset} — Generate PDF")
     st.write(f"**{len(keep)}** parameter(s) · "
