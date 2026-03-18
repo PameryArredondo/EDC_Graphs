@@ -1802,7 +1802,7 @@ def run_manual_entry_flow():
     )
 
     col_a, col_b, col_c = st.columns(3)
-    study_num    = col_a.text_input("Study Number",    placeholder="e.g. CS251037")
+    study_num    = col_a.text_input("Clinical Study Number",    placeholder="e.g. CS251037")
     analysis_lbl = col_b.text_input("Analysis Type",   placeholder="e.g. Expert Grading")
     show_center  = col_c.checkbox("Show center on charts", value=False)
     study_ref    = (
